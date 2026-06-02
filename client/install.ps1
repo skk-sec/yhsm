@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = 'latest',
+    [string]$Version = '',
     [string]$InstallDir = (Join-Path $HOME '.local\bin'),
     [string]$Repo = $env:YHSMCTL_REPO,
     [switch]$DryRun,
@@ -13,8 +13,19 @@ function Mask-ArgValue {
     if ($Value -match '(?i)(token|pass(word)?|secret|key|auth|credential)') { return '***' }
     return $Value
 }
-$maskedArgs = @($args | ForEach-Object { Mask-ArgValue -Value $_ })
-Write-Host "[argv] $($MyInvocation.MyCommand.Path) $($maskedArgs -join ' ')"
+$rawArgs = @()
+foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+    if ($entry.Value -is [switch] -or $entry.Value -is [System.Management.Automation.SwitchParameter]) {
+        if ($entry.Value.IsPresent) { $rawArgs += "-$($entry.Key)" }
+    } else {
+        $rawArgs += "-$($entry.Key)"
+        $rawArgs += [string]$entry.Value
+    }
+}
+$rawArgs += $args
+$maskedArgs = @($rawArgs | ForEach-Object { Mask-ArgValue -Value $_ })
+$scriptName = [IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
+Write-Host "[argv] $scriptName $($maskedArgs -join ' ')"
 
 function Write-Info { param([string]$Message) Write-Host "[*] $Message" }
 function Write-WarnLine { param([string]$Message) Write-Host "[!] $Message" }
@@ -26,9 +37,9 @@ Nutzung:
   ./client/install.ps1 [-Version <vX.Y.Z|latest>] [-InstallDir <Pfad>] [-Repo <owner/repo>] [-DryRun]
 
 Optionen:
-  -Version <wert>     Release-Version; Default: latest mit Manifest-Fallback.
+  -Version <wert>     Release-Version; Default: current_release_version aus manifest.json; Fallback: YHSMCTL_VERSION.
   -InstallDir <pfad>  Installationsziel; Default: $HOME\.local\bin.
-  -Repo <owner/repo>  GitHub Repository; alternativ YHSMCTL_REPO.
+  -Repo <owner/repo>  GitHub Repository; alternativ YHSMCTL_REPO. Default: https://github.com/skk-sec/yhsm.
   -DryRun             Aktionen nur anzeigen; nichts herunterladen oder installieren.
   -Help               Diese Hilfe anzeigen.
 '@
@@ -39,14 +50,63 @@ if ($Help) { Show-Usage; exit 0 }
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $manifestPath = Join-Path $PSScriptRoot 'manifest.json'
-if (-not (Test-Path -LiteralPath $manifestPath)) { Write-ErrorLine "Manifest fehlt: $manifestPath"; exit 1 }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$manifestAvailable = Test-Path -LiteralPath $manifestPath
+$manifest = $null
+if ($manifestAvailable) {
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    if ($manifestAvailable -and -not [string]::IsNullOrWhiteSpace($manifest.current_release_version)) {
+        $Version = $manifest.current_release_version
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:YHSMCTL_VERSION)) {
+        $Version = $env:YHSMCTL_VERSION
+    } else {
+        $Version = 'unknown'
+    }
+}
+if ($Version -eq 'latest' -and $manifestAvailable) {
+    $Version = $manifest.current_release_version
+}
+Write-Host "YHSM Client Release Version: $Version"
+if (-not $manifestAvailable) {
+    if (-not [string]::IsNullOrWhiteSpace($env:YHSMCTL_VERSION)) {
+        Write-WarnLine "Manifest fehlt; nutze YHSMCTL_VERSION als Release-Version."
+    } else {
+        Write-WarnLine "Manifest fehlt und YHSMCTL_VERSION ist nicht gesetzt; Release-Version ist unbekannt."
+    }
+    if ($DryRun) {
+        Write-Info "(dry-run) geplant/nicht ausgeführt: Manifest-basierte Download-URLs können nicht aufgelöst werden."
+        exit 0
+    }
+    Write-ErrorLine "Manifest fehlt; Installation benötigt client/manifest.json."
+    exit 1
+}
 
-if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = $manifest.repository }
-if ([string]::IsNullOrWhiteSpace($Repo) -or $Repo -eq 'OWNER/REPO') {
-    Write-ErrorLine 'GitHub Repository ist nicht konfiguriert. Bitte -Repo <owner/repo> oder YHSMCTL_REPO setzen.'
+function Resolve-RepoUrl {
+    param([string]$Repository)
+    $resolved = ($Repository ?? '').Trim().TrimEnd('/')
+    if ($resolved.StartsWith('https://github.com/')) { return $resolved }
+    if ($resolved.StartsWith('http://github.com/')) { return "https://github.com/$($resolved.Substring('http://github.com/'.Length))" }
+    if ($resolved.Contains('/')) { return "https://github.com/$resolved" }
+    return $resolved
+}
+function Resolve-RepoSlug {
+    param([string]$ResolvedRepoUrl)
+    return $ResolvedRepoUrl.TrimEnd('/') -replace '^https://github\.com/', ''
+}
+
+$RepoUrl = "https://github.com/skk-sec/yhsm"
+if (-not [string]::IsNullOrWhiteSpace($Repo)) {
+    $RepoUrl = Resolve-RepoUrl -Repository $Repo
+} elseif (-not [string]::IsNullOrWhiteSpace($manifest.repository) -and $manifest.repository -ne 'OWNER/REPO') {
+    $RepoUrl = Resolve-RepoUrl -Repository $manifest.repository
+}
+$Repo = Resolve-RepoSlug -ResolvedRepoUrl $RepoUrl
+if ([string]::IsNullOrWhiteSpace($Repo) -or $Repo -eq $RepoUrl -or $Repo -eq 'OWNER/REPO') {
+    Write-ErrorLine "GitHub Repository ist ungültig: $RepoUrl. Bitte -Repo <owner/repo> oder YHSMCTL_REPO prüfen."
     exit 2
 }
+Write-Info "Repository: $RepoUrl"
 
 $osName = 'windows'
 $arch = if ([Environment]::Is64BitOperatingSystem) { 'amd64' } else { 'unsupported' }
@@ -54,16 +114,6 @@ if ($arch -ne 'amd64') { Write-ErrorLine "Nicht unterstützte Architektur: $arch
 $platform = @($manifest.supported_platforms | Where-Object { $_.os -eq $osName -and $_.arch -eq $arch } | Select-Object -First 1)
 if (-not $platform) { Write-ErrorLine "Keine Asset-Zuordnung für $osName-$arch im Manifest."; exit 2 }
 $asset = $platform.asset
-
-if ($Version -eq 'latest') {
-    try {
-        $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ 'Accept' = 'application/vnd.github+json' }
-        $Version = $latest.tag_name
-    } catch {
-        $Version = $manifest.current_release_version
-        Write-WarnLine "Latest Release konnte nicht über GitHub API ermittelt werden; nutze Manifest-Version $Version."
-    }
-}
 
 function Expand-Template {
     param([string]$Template, [string]$ReleaseVersion, [string]$AssetName, [string]$Repository)

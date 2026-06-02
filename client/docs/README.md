@@ -14,6 +14,14 @@ YHSMCTL_REPO=<owner>/<repo> ./install-yhsmctl.sh
 
 Erwartetes Ergebnis: `yhsmctl` liegt unter `~/.local/bin/yhsmctl` und die SHA256-Prüfung wurde erfolgreich durchgeführt.
 
+Der Installer zeigt direkt am Start die Client-Release-Version aus `manifest.json` an:
+
+```text
+YHSM Client Release Version: v2.0.0
+```
+
+Falls `manifest.json` fehlt, nutzt der Dry-run `YHSMCTL_VERSION` als Fallback und führt weiterhin keine Downloads oder Installationsschritte aus.
+
 ## Installation Windows
 
 ```powershell
@@ -22,6 +30,8 @@ $env:YHSMCTL_REPO = '<owner>/<repo>'
 ```
 
 Erwartetes Ergebnis: `yhsmctl.exe` liegt unter `$HOME\.local\bin\yhsmctl.exe` und die SHA256-Prüfung wurde erfolgreich durchgeführt.
+
+Auch der Windows-Installer schreibt zu Beginn dieselbe Release-Version wie der Linux-Installer, damit Kunden den Paketstand ohne interne Quellpfade erkennen können.
 
 ## Release-Artefakte bauen
 
