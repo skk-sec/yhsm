@@ -1,5 +1,5 @@
 {
-  "current_release_version": "v2.0.0",
+  "current_release_version": "v2.0.1",
   "repository": "OWNER/REPO",
   "release_url_template": "https://github.com/{repository}/releases/download/{version}/{asset}",
   "checksum_url_template": "https://github.com/{repository}/releases/download/{version}/{asset}.sha256",
