@@ -13,26 +13,50 @@ WORKDIR="$DEFAULT_WORKDIR"
 TARGET_VISIBILITY="private"
 DRY_RUN=0
 ISSUE_SMOKE_TEST=0
+SMOKE_ISSUE_REPO=""
+SMOKE_ISSUE_NUMBER=""
+
+sensitive_argv_key() {
+  local key="$1"
+  key="${key%%=*}"
+  key="${key#--}"
+  key="${key#-}"
+  key="${key,,}"
+  [[ "$key" =~ (token|pass(word)?|secret|key|auth|credential) ]]
+}
 
 mask_argv_arg() {
-  local arg="$1"
-  if [[ "$arg" =~ ^([^=]+)=.*$ ]]; then
-    local key="${BASH_REMATCH[1]}"
-    if [[ "$key" =~ (?i)(token|pass(word)?|secret|key|auth|credential) ]]; then
+  local arg="$1" key
+  if [[ "$arg" == *=* ]]; then
+    key="${arg%%=*}"
+    if sensitive_argv_key "$key"; then
       printf '%s=***' "$key"
       return
     fi
-  fi
-  if [[ "$arg" =~ (?i)(token|pass(word)?|secret|key|auth|credential) ]]; then
-    printf '***'
-    return
   fi
   printf '%s' "$arg"
 }
 
 print_argv_banner() {
   local masked=() arg
-  for arg in "$@"; do masked+=("$(mask_argv_arg "$arg")"); done
+  local mask_next=0
+  for arg in "$@"; do
+    if [[ "$mask_next" -eq 1 ]]; then
+      masked+=("***")
+      mask_next=0
+      continue
+    fi
+    if [[ "$arg" == *=* ]] && sensitive_argv_key "${arg%%=*}"; then
+      masked+=("$(mask_argv_arg "$arg")")
+      continue
+    fi
+    if [[ "$arg" == -* ]] && sensitive_argv_key "$arg"; then
+      masked+=("$arg")
+      mask_next=1
+      continue
+    fi
+    masked+=("$arg")
+  done
   printf '[argv] %s %s\n' "$(basename -- "$0")" "${masked[*]}"
 }
 
@@ -64,7 +88,7 @@ Stage-0 scope:
   - Debian/Ubuntu apt-based hosts only.
   - Installs baseline repository-access tools only.
   - For private targets installs GitHub CLI from the official signed Debian repository.
-  - Uses GitHub device/web authentication; no token is accepted in argv.
+  - Uses GitHub device/web authentication; token-bearing GitHub auth environment variables are rejected.
   - Verifies private repository and issue read access, clones main and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary issue.
   - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
@@ -123,6 +147,19 @@ if [[ "$ISSUE_SMOKE_TEST" -eq 1 && "$TARGET_VISIBILITY" != "private" ]]; then
   log_error "--issue-smoke-test requires --private-target in the current pilot contract."
   exit 2
 fi
+
+reject_github_token_environment() {
+  local name
+  [[ "$TARGET_VISIBILITY" == "private" ]] || return 0
+  for name in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; do
+    if [[ -v "$name" && -n "${!name}" ]]; then
+      log_error "$name is set; private Stage-0 requires GitHub Device/Web authentication. Unset the variable and retry."
+      return 1
+    fi
+  done
+}
+
+reject_github_token_environment
 
 if [[ ! -r /etc/os-release ]]; then
   log_error "Unsupported host: /etc/os-release is missing."
@@ -308,6 +345,16 @@ else
   log_warn "Target repository has no client/README.md; verify the selected channel."
 fi
 
+cleanup_issue_smoke_test() {
+  if [[ -z "$SMOKE_ISSUE_REPO" || -z "$SMOKE_ISSUE_NUMBER" ]]; then
+    return 0
+  fi
+  gh issue close "$SMOKE_ISSUE_NUMBER" \
+    --repo "$SMOKE_ISSUE_REPO" \
+    --comment 'Stage-0 cleanup closed the temporary smoke-test issue after an interrupted verification.' \
+    >/dev/null 2>&1 || true
+}
+
 run_issue_smoke_test() {
   local issue_url issue_number
   log_info "Creating sanitized temporary support-channel smoke-test issue."
@@ -320,6 +367,9 @@ run_issue_smoke_test() {
     log_error "Issue smoke test created an unparseable issue reference."
     return 1
   }
+  SMOKE_ISSUE_REPO="$TARGET_REPO"
+  SMOKE_ISSUE_NUMBER="$issue_number"
+  trap cleanup_issue_smoke_test EXIT
   log_info "IssueSmokeTestIssue=$issue_number"
   gh issue comment "$issue_number" \
     --repo "$TARGET_REPO" \
@@ -330,6 +380,9 @@ run_issue_smoke_test() {
   gh issue close "$issue_number" \
     --repo "$TARGET_REPO" \
     --comment 'Stage-0 issue-channel smoke test completed successfully; no product incident.' >/dev/null
+  SMOKE_ISSUE_REPO=""
+  SMOKE_ISSUE_NUMBER=""
+  trap - EXIT
   log_ok "IssueSmokeTest=PASS issue=$issue_number"
 }
 
