@@ -1,34 +1,5 @@
 # yhsmctl Client-Installer
 
-## Stage 0 — frischer Linux-Host ohne git/gh
-
-`client/bootstrap.sh` ist der öffentliche Stage-0-Einstieg für einen frischen Debian-/Ubuntu-Host. Er installiert nur die für den Repositoryzugriff notwendigen Basistools und führt keine DNS-, Connector-, HSM-, AD- oder PKI-Mutation aus.
-
-Sicherer Start ohne vorinstalliertes `git` oder `gh`:
-
-1. `client/bootstrap.sh` über einen ausdrücklich genannten **immutable Commit-SHA** aus diesem öffentlichen Repository herunterladen.
-2. SHA-256 separat prüfen.
-3. Erst danach mit `bash` ausführen.
-4. Kein `curl | sh`.
-
-Aktueller privater Pilotkanal:
-
-```bash
-./client/bootstrap.sh --target-repo skk-sec/yhsm-customer-pilot --target-branch main --private-target
-```
-
-Bei einem späteren vollständig öffentlichen Kanal ist kein GitHub-Login erforderlich:
-
-```bash
-./client/bootstrap.sh --target-repo skk-sec/yhsm --target-branch main --public-target
-```
-
-Nur Plan anzeigen:
-
-```bash
-./client/bootstrap.sh --dry-run
-```
-
 ## Zweck
 Dieses Verzeichnis enthält die kundenseitigen Installer und das Manifest für `yhsmctl`. Die Binaries werden nicht im Repository abgelegt, sondern als GitHub-Release-Assets bereitgestellt.
 
