@@ -1,0 +1,21 @@
+YHSM STAGE-0 BOOTSTRAP — INTERIM PROPRIETARY PILOT TERMS
+Copyright (c) 2026 blankbox GmbH. All rights reserved.
+
+This file governs only the public Stage-0 bootstrap material distributed from the public YHSM bootstrap repository during the pilot phase.
+
+Permission is granted to an authorized pilot customer to:
+- view the Stage-0 material;
+- download the Stage-0 material; and
+- execute the Stage-0 material solely for the customer-specific YubiHSM onboarding, installation and evaluation purpose authorized by blankbox GmbH.
+
+Except where mandatory law provides otherwise, permission is not granted to:
+- modify or create derivative works from the Stage-0 material;
+- redistribute, publish, mirror, sublicense, sell, rent, lease or otherwise provide the Stage-0 material to third parties;
+- commercially reuse the Stage-0 material outside the specifically authorized customer pilot; or
+- use the Stage-0 material to provide a competing product, managed service, hosting service or service-bureau offering.
+
+No ownership or exclusive right is transferred. All rights not expressly granted remain reserved by blankbox GmbH.
+
+The Stage-0 material is pilot software and may be incomplete or contain defects. No support, maintenance, service level, production-readiness or fitness commitment is provided unless separately agreed in writing. Mandatory statutory rights and liabilities remain unaffected.
+
+These are interim pilot terms. Final legal review and final product licensing remain pending and may result in replacement terms for later releases or productive use.
