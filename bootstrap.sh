@@ -89,6 +89,17 @@ print_argv_banner() {
   local authorization_next=0
   for arg in "$@"; do
     lower="${arg,,}"
+    case "$lower" in
+      --target-repo|--target-branch|--workdir)
+        masked+=("$arg")
+        mask_next=1
+        continue
+        ;;
+      --target-repo=*|--target-branch=*|--workdir=*)
+        masked+=("${arg%%=*}=***")
+        continue
+        ;;
+    esac
     if [[ "$mask_next" -eq 1 ]]; then
       masked+=("***")
       if authorization_scheme_marker "$arg"; then
@@ -427,9 +438,17 @@ reject_plaintext_gh_credentials() {
         pending_oauth_indent=-1
         pending_explicit_oauth_key=0
         pending_explicit_oauth_indent=-1
+        in_explicit_key_scalar=0
+        explicit_key_scalar_parent_indent=-1
+        explicit_key_scalar_content_indent=-1
+        explicit_key_scalar_indent_indicator=0
+        explicit_key_scalar_chomp=""
+        explicit_key_scalar_seen=0
+        explicit_key_scalar_exact=1
       }
       {
         line=$0
+        sub(/\r$/, "", line)
         n=length(line)
         indent=leading_spaces(line)
         if (pending_oauth_value) {
@@ -439,6 +458,38 @@ reject_plaintext_gh_credentials() {
             next
           }
           pending_oauth_value=0
+        }
+        if (in_explicit_key_scalar) {
+          if (line ~ /^[[:space:]]*$/) {
+            if (!explicit_key_scalar_seen) explicit_key_scalar_exact=0
+            next
+          }
+          if (indent > explicit_key_scalar_parent_indent) {
+            if (explicit_key_scalar_content_indent < 0) {
+              if (explicit_key_scalar_indent_indicator > 0) {
+                explicit_key_scalar_content_indent=explicit_key_scalar_parent_indent + explicit_key_scalar_indent_indicator
+              } else {
+                explicit_key_scalar_content_indent=indent
+              }
+            }
+            if (indent < explicit_key_scalar_content_indent) {
+              explicit_key_scalar_exact=0
+              next
+            }
+            scalar_line=substr(line, explicit_key_scalar_content_indent + 1)
+            if (!explicit_key_scalar_seen) {
+              explicit_key_scalar_seen=1
+              if (scalar_line != "oauth_token") explicit_key_scalar_exact=0
+            } else {
+              explicit_key_scalar_exact=0
+            }
+            next
+          }
+          in_explicit_key_scalar=0
+          if (explicit_key_scalar_chomp == "-" && explicit_key_scalar_seen && explicit_key_scalar_exact) {
+            pending_explicit_oauth_key=1
+            pending_explicit_oauth_indent=explicit_key_scalar_parent_indent
+          }
         }
         if (in_block_scalar) {
           if (line ~ /^[[:space:]]*$/) next
@@ -474,6 +525,28 @@ reject_plaintext_gh_credentials() {
             explicit_key=1
             i++
             continue
+          }
+          if (entry && explicit_key && block_scalar_value(line, i, n)) {
+            in_explicit_key_scalar=1
+            explicit_key_scalar_parent_indent=indent
+            explicit_key_scalar_content_indent=-1
+            explicit_key_scalar_indent_indicator=0
+            explicit_key_scalar_chomp=""
+            explicit_key_scalar_seen=0
+            explicit_key_scalar_exact=1
+            k=i + 1
+            while (k <= n) {
+              header_char=substr(line, k, 1)
+              if (header_char == "+" || header_char == "-") {
+                explicit_key_scalar_chomp=header_char
+              } else if (header_char ~ /[1-9]/) {
+                explicit_key_scalar_indent_indicator=header_char + 0
+              } else if (header_char ~ /[[:space:]]/ || header_char == "#") {
+                break
+              }
+              k++
+            }
+            break
           }
           token=""
           if (c == "\"" || c == sq) {
