@@ -21,32 +21,118 @@ sensitive_argv_key() {
   key="${key#--}"
   key="${key#-}"
   key="${key,,}"
-  [[ "$key" =~ (token|pass(word)?|secret|key|auth|credential) ]]
+  [[ "$key" =~ (token|pass(word)?|secret|key|auth|credential|cookie|pin) ]]
+}
+
+is_contract_status() {
+  case "$1" in
+    PASS|WARN|BLOCKED|UNKNOWN) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_target_branch() {
+  local branch="$1"
+  [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != -* ]] || return 1
+  [[ "$branch" != HEAD ]] || return 1
+  [[ "$branch" != /* && "$branch" != */ && "$branch" != *//* && "$branch" != *..* ]] || return 1
+  [[ "$branch" != .* && "$branch" != */.* ]] || return 1
+  [[ "$branch" != *. && "$branch" != *./* ]] || return 1
+  [[ "$branch" != *.lock && "$branch" != *.lock/* ]] || return 1
+  return 0
+}
+
+authorization_scheme_marker() {
+  local lower="${1,,}"
+  [[ "$lower" =~ ^[[:space:]]*(basic|bearer|digest|negotiate|ntlm)[[:space:]]*$ || "$lower" =~ ^[[:space:]]*(proxy-)?authorization:[[:space:]]*(basic|bearer|digest|negotiate|ntlm)[[:space:]]*$ ]]
 }
 
 mask_argv_arg() {
-  local arg="$1" key
+  local arg="$1" key value
   if [[ "$arg" == *=* ]]; then
     key="${arg%%=*}"
-    if sensitive_argv_key "$key"; then
+    value="${arg#*=}"
+    if sensitive_argv_key "$key" || sensitive_argv_value "$value"; then
       printf '%s=***' "$key"
       return
     fi
   fi
+  if sensitive_argv_value "$arg"; then
+    printf '%s' '***'
+    return
+  fi
   printf '%s' "$arg"
 }
 
+sensitive_argv_value() {
+  local value="$1"
+  local lower="${value,,}"
+  [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]] && return 0
+  is_contract_status "$value" && return 1
+  if [[ "$value" =~ ^([^=[:space:]]+)=(.*)$ ]] && sensitive_argv_key "${BASH_REMATCH[1]}"; then
+    return 0
+  fi
+  [[ "$value" =~ (^|[^A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{8,}($|[^A-Za-z0-9_]) ]] && return 0
+  [[ "$value" =~ (^|[^A-Za-z0-9_])github_pat_[A-Za-z0-9_]{8,}($|[^A-Za-z0-9_]) ]] && return 0
+  [[ "$value" =~ (^|[^A-Za-z0-9-])xox[a-z]-[A-Za-z0-9-]{8,}($|[^A-Za-z0-9-]) ]] && return 0
+  [[ "$value" =~ (^|[^A-Za-z0-9-])xapp-[0-9]+-[A-Za-z0-9]+-[A-Za-z0-9-]{8,}($|[^A-Za-z0-9-]) ]] && return 0
+  [[ "$value" =~ (^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*($|[^A-Za-z0-9_-]) ]] && return 0
+  [[ "$lower" =~ ^(proxy-)?authorization:[[:space:]]*.+$ ]] && return 0
+  [[ "$lower" =~ ^(basic|bearer|digest|negotiate|ntlm)[[:space:]]+.+$ ]] && return 0
+  return 1
+}
+
 print_argv_banner() {
-  local masked=() arg
+  local masked=() arg lower value
   local mask_next=0
+  local authorization_next=0
   for arg in "$@"; do
+    lower="${arg,,}"
     if [[ "$mask_next" -eq 1 ]]; then
       masked+=("***")
-      mask_next=0
+      if authorization_scheme_marker "$arg"; then
+        mask_next=1
+      else
+        mask_next=0
+      fi
       continue
     fi
-    if [[ "$arg" == *=* ]] && sensitive_argv_key "${arg%%=*}"; then
+    if [[ "$authorization_next" -eq 1 ]]; then
+      case "$lower" in
+        basic|bearer|digest|negotiate|ntlm)
+          masked+=("$arg")
+          mask_next=1
+          ;;
+        *)
+          masked+=("***")
+          ;;
+      esac
+      authorization_next=0
+      continue
+    fi
+    if [[ "$lower" =~ ^(proxy-)?authorization:[[:space:]]*(basic|bearer|digest|negotiate|ntlm)$ ]]; then
+      masked+=("$arg")
+      mask_next=1
+      continue
+    fi
+    case "$lower" in
+      authorization:|proxy-authorization:)
+        masked+=("$arg")
+        authorization_next=1
+        continue
+        ;;
+      basic|bearer|digest|negotiate|ntlm)
+        masked+=("$arg")
+        mask_next=1
+        continue
+        ;;
+    esac
+    if [[ "$arg" == *=* ]] && { sensitive_argv_key "${arg%%=*}" || sensitive_argv_value "${arg#*=}"; }; then
+      value="${arg#*=}"
       masked+=("$(mask_argv_arg "$arg")")
+      if authorization_scheme_marker "$value"; then
+        mask_next=1
+      fi
       continue
     fi
     if [[ "$arg" == -* ]] && sensitive_argv_key "$arg"; then
@@ -54,7 +140,11 @@ print_argv_banner() {
       mask_next=1
       continue
     fi
-    masked+=("$arg")
+    if sensitive_argv_value "$arg"; then
+      masked+=("***")
+      continue
+    fi
+    masked+=("$(mask_argv_arg "$arg")")
   done
   printf '[argv] %s %s\n' "$(basename -- "$0")" "${masked[*]}"
 }
@@ -69,11 +159,10 @@ usage() {
 Customer YubiHSM Stage-0 Bootstrap
 
 Usage:
-  ./bootstrap.sh --target-repo <owner/repo> [options]
+  bash ./bootstrap.sh --target-repo <owner/repo> [options]
 
 Examples:
-  ./bootstrap.sh --private-target --target-repo y-hsm/bues
-  ./bootstrap.sh --private-target --target-repo y-hsm/gev
+  bash ./bootstrap.sh --private-target --target-repo example-org/pilot-repository
 
 Options:
   --target-repo <owner/repo>   Required customer repository cloned after bootstrap.
@@ -90,6 +179,7 @@ Stage-0 scope:
   - Debian/Ubuntu apt-based hosts only.
   - Installs baseline repository-access tools only.
   - For private targets installs GitHub CLI from the official signed Debian repository.
+  - Requires a working system credential store and refuses gh plaintext token storage.
   - Uses GitHub device/web authentication; token-bearing GitHub auth environment variables are rejected.
   - Verifies private repository and issue read access, clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
@@ -97,21 +187,23 @@ Stage-0 scope:
   - The public Stage-0 repository contains no implicit private customer default; the customer channel is always explicit.
 USAGE
 }
-
 print_argv_banner "$@"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target-repo)
-      TARGET_REPO="${2:-}"
+      [[ $# -ge 2 && "${2:-}" != -* ]] || { log_error "--target-repo requires a repository operand."; exit 2; }
+      TARGET_REPO="$2"
       shift 2
       ;;
     --target-branch)
-      TARGET_BRANCH="${2:-}"
+      [[ $# -ge 2 && "${2:-}" != -* ]] || { log_error "--target-branch requires a branch operand."; exit 2; }
+      TARGET_BRANCH="$2"
       shift 2
       ;;
     --workdir)
-      WORKDIR="${2:-}"
+      [[ $# -ge 2 && "${2:-}" != -* ]] || { log_error "--workdir requires a path operand."; exit 2; }
+      WORKDIR="$2"
       shift 2
       ;;
     --private-target)
@@ -147,9 +239,22 @@ done
   exit 2
 }
 [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log_error "Invalid --target-repo."; exit 2; }
-[[ "$TARGET_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || { log_error "Invalid --target-branch."; exit 2; }
+if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
+  log_error "--target-repo contains a sensitive-shaped value and is rejected."
+  exit 2
+fi
+valid_target_branch "$TARGET_BRANCH" || { log_error "Invalid --target-branch."; exit 2; }
+if sensitive_argv_value "$TARGET_BRANCH"; then
+  log_error "--target-branch contains a sensitive-shaped value and is rejected."
+  exit 2
+fi
 [[ "$TARGET_VISIBILITY" == "public" || "$TARGET_VISIBILITY" == "private" ]] || { log_error "Invalid target visibility."; exit 2; }
 [[ -n "$WORKDIR" ]] || { log_error "--workdir must not be empty."; exit 2; }
+[[ "$WORKDIR" != -* ]] || { log_error "Invalid --workdir."; exit 2; }
+if sensitive_argv_value "$WORKDIR"; then
+  log_error "--workdir contains a sensitive-shaped value and is rejected."
+  exit 2
+fi
 if [[ "$ISSUE_SMOKE_TEST" -eq 1 && "$TARGET_VISIBILITY" != "private" ]]; then
   log_error "--issue-smoke-test requires --private-target in the current pilot contract."
   exit 2
@@ -179,18 +284,13 @@ case "${ID:-}:${ID_LIKE:-}" in
   *) log_error "Stage-0 currently supports Debian/Ubuntu apt-based hosts only."; exit 1 ;;
 esac
 
-for cmd in bash curl sha256sum; do
+for cmd in bash sha256sum; do
   command -v "$cmd" >/dev/null 2>&1 || { log_error "Required Stage-0 tool missing: $cmd"; exit 1; }
 done
 command -v apt-get >/dev/null 2>&1 || { log_error "Required package manager missing: apt-get"; exit 1; }
 command -v dpkg >/dev/null 2>&1 || { log_error "Required package tool missing: dpkg"; exit 1; }
 
-if [[ "$EUID" -eq 0 ]]; then
-  SUDO=()
-else
-  command -v sudo >/dev/null 2>&1 || { log_error "sudo is required for package installation."; exit 1; }
-  SUDO=(sudo)
-fi
+SUDO=()
 
 clone_url="https://github.com/${TARGET_REPO}.git"
 dest_name="${TARGET_REPO##*/}"
@@ -207,6 +307,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log_info "(dry-run) install ca-certificates and git if missing"
   if [[ "$TARGET_VISIBILITY" == "private" ]]; then
     log_info "(dry-run) install GitHub CLI from the official signed Debian repository if missing"
+    log_info "(dry-run) require and verify a secure system credential store"
     log_info "(dry-run) authenticate with GitHub device/web flow if not already authenticated"
     log_info "(dry-run) configure gh as the Git credential helper"
     log_info "(dry-run) verify private repository and issue read access"
@@ -221,7 +322,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 ensure_sudo_auth() {
-  if [[ "${#SUDO[@]}" -eq 0 ]]; then return; fi
+  if [[ "$EUID" -eq 0 ]]; then SUDO=(); return; fi
+  command -v sudo >/dev/null 2>&1 || { log_error "sudo is required because package installation is needed."; return 1; }
+  SUDO=(sudo)
   if sudo -n true 2>/dev/null; then log_ok "sudo authorization already active."; return; fi
   log_info "Local sudo authentication is required for package installation."
   log_info "Enter only the local password at the sudo prompt; do not paste further commands until the shell prompt returns."
@@ -230,21 +333,24 @@ ensure_sudo_auth() {
   log_ok "sudo authorization verified."
 }
 
-ensure_sudo_auth
-
-need_base=0
-command -v git >/dev/null 2>&1 || need_base=1
-if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then need_base=1; fi
-if [[ "$need_base" -eq 1 ]]; then
-  log_info "Installing baseline client-access packages."
+missing_packages=()
+command -v git >/dev/null 2>&1 || missing_packages+=(git)
+if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then missing_packages+=(ca-certificates); fi
+if [[ "$TARGET_VISIBILITY" == "private" ]] && ! command -v gh >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then missing_packages+=(curl); fi
+if [[ "$TARGET_VISIBILITY" == "private" ]] && ! command -v secret-tool >/dev/null 2>&1; then missing_packages+=(libsecret-tools); fi
+if [[ "${#missing_packages[@]}" -gt 0 ]]; then
+  ensure_sudo_auth
+  log_info "Installing missing client-access packages."
   "${SUDO[@]}" apt-get update
-  "${SUDO[@]}" apt-get install -y --no-install-recommends ca-certificates git
+  "${SUDO[@]}" apt-get install -y --no-install-recommends "${missing_packages[@]}"
 else
   log_ok "Baseline client-access packages already present."
 fi
 
 install_gh() {
   if command -v gh >/dev/null 2>&1; then log_ok "GitHub CLI already present."; return; fi
+  command -v curl >/dev/null 2>&1 || { log_error "curl installation did not produce curl before GitHub CLI bootstrap."; return 1; }
+  ensure_sudo_auth
   local tmp
   tmp="$(mktemp)"
   log_info "Downloading official GitHub CLI repository keyring."
@@ -265,15 +371,84 @@ install_gh() {
   log_ok "GitHub CLI installed."
 }
 
+reject_plaintext_gh_credentials() {
+  local config_file="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
+  if [[ -f "$config_file" ]] && awk '
+      /^[[:space:]]*oauth_token:[[:space:]]*[^[:space:]#]/ { found=1 }
+      END { exit(found ? 0 : 1) }
+    ' "$config_file"; then
+    log_error "GitHub CLI has a plaintext token in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying."
+    return 1
+  fi
+}
+
+verify_secure_gh_credential_backend() {
+  local probe_service probe_value='stage0-credential-backend-probe' probe_readback
+  command -v secret-tool >/dev/null 2>&1 || { log_error "Secure credential backend probe requires secret-tool."; return 1; }
+  probe_service="yhsm-stage0-probe-${EUID}-$$"
+  if ! printf '%s' "$probe_value" | secret-tool store --label='YHSM Stage-0 credential-backend probe' service "$probe_service" account probe >/dev/null 2>&1; then
+    log_error "No usable system credential store is available; GitHub authentication is blocked to prevent plaintext-token fallback."
+    return 1
+  fi
+  probe_readback="$(secret-tool lookup service "$probe_service" account probe 2>/dev/null || true)"
+  secret-tool clear service "$probe_service" account probe >/dev/null 2>&1 || true
+  [[ "$probe_readback" == "$probe_value" ]] || {
+    log_error "System credential store failed its write/read/clear probe; GitHub authentication is blocked."
+    return 1
+  }
+  log_ok "Secure GitHub credential-backend contract verified."
+}
+
+restore_gh_config_snapshot() {
+  local config_file="$1" backup_file="$2" existed="$3"
+  if [[ "$existed" -eq 1 ]]; then
+    mkdir -p "$(dirname -- "$config_file")"
+    install -m 0600 "$backup_file" "$config_file"
+  else
+    rm -f -- "$config_file"
+  fi
+}
+
+run_gh_device_login_fail_closed() {
+  local config_file config_dir snapshot_dir backup_file existed=0
+  config_file="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
+  config_dir="$(dirname -- "$config_file")"
+  snapshot_dir="$(mktemp -d)"
+  chmod 0700 "$snapshot_dir"
+  backup_file="$snapshot_dir/hosts.yml.before"
+  if [[ -f "$config_file" ]]; then
+    cp -- "$config_file" "$backup_file"
+    chmod 0600 "$backup_file"
+    existed=1
+  fi
+  mkdir -p "$config_dir"
+  if ! gh auth login --hostname github.com --git-protocol https --web; then
+    restore_gh_config_snapshot "$config_file" "$backup_file" "$existed"
+    rm -rf -- "$snapshot_dir"
+    log_error "GitHub device/web authentication failed; the previous gh configuration was restored."
+    return 1
+  fi
+  if ! reject_plaintext_gh_credentials; then
+    restore_gh_config_snapshot "$config_file" "$backup_file" "$existed"
+    rm -rf -- "$snapshot_dir"
+    log_error "GitHub CLI plaintext fallback was removed and the previous gh configuration was restored."
+    return 1
+  fi
+  rm -rf -- "$snapshot_dir"
+}
+
 if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   install_gh
+  verify_secure_gh_credential_backend
+  reject_plaintext_gh_credentials
   if ! gh auth status --hostname github.com >/dev/null 2>&1; then
     log_info "GitHub authentication required for the private customer repository."
     log_info "Complete the one-time device/web flow shown by GitHub CLI."
-    gh auth login --hostname github.com --git-protocol https --web
+    run_gh_device_login_fail_closed
   else
     log_ok "GitHub authentication already present."
   fi
+  reject_plaintext_gh_credentials
   gh auth setup-git --hostname github.com
   gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null || {
     log_error "Authenticated GitHub account cannot access the target repository."; exit 1
@@ -295,10 +470,42 @@ if [[ -d "$dest_path/.git" ]]; then
     "$clone_url"|"https://github.com/$TARGET_REPO") ;;
     *) log_error "Existing clone has an unexpected origin remote."; exit 1 ;;
   esac
-  log_info "Existing clone found; updating branch with fast-forward only."
-  git -C "$dest_path" fetch origin "$TARGET_BRANCH" --quiet
-  git -C "$dest_path" checkout "$TARGET_BRANCH" --quiet
-  git -C "$dest_path" pull --ff-only origin "$TARGET_BRANCH" --quiet
+  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
+    log_error "Existing clone is not clean; refusing to modify or report it as canonical."
+    exit 1
+  fi
+  log_info "Existing clean clone found; fetching exact remote branch."
+  git -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
+  remote_head="$(git -C "$dest_path" rev-parse "origin/$TARGET_BRANCH")"
+  ignored_collision=0
+  while IFS= read -r -d '' ignored_path; do
+    if git -C "$dest_path" cat-file -e "$remote_head:$ignored_path" 2>/dev/null; then
+      ignored_collision=1
+      break
+    fi
+  done < <(git -C "$dest_path" ls-files --others --ignored --exclude-standard -z)
+  if [[ "$ignored_collision" -eq 1 ]]; then
+    log_error "Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state."
+    exit 1
+  fi
+  if git -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
+    git -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
+  else
+    git -C "$dest_path" checkout --no-overwrite-ignore --track -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH" --quiet
+  fi
+  local_head="$(git -C "$dest_path" rev-parse HEAD)"
+  if [[ "$local_head" != "$remote_head" ]]; then
+    if git -C "$dest_path" merge-base --is-ancestor "$local_head" "$remote_head"; then
+      git -C "$dest_path" merge --ff-only "$remote_head" --quiet
+    else
+      log_error "Existing clone does not exactly match origin/$TARGET_BRANCH and cannot be safely fast-forwarded."
+      exit 1
+    fi
+  fi
+  [[ "$(git -C "$dest_path" rev-parse HEAD)" == "$(git -C "$dest_path" rev-parse "origin/$TARGET_BRANCH")" ]] || {
+    log_error "Existing clone is not exact to the fetched remote branch."
+    exit 1
+  }
 else
   log_info "Cloning customer repository."
   git clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
