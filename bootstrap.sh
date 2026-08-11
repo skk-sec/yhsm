@@ -302,10 +302,45 @@ reject_github_token_environment() {
 
 reject_github_token_environment
 
-if [[ -v GIT_REPLACE_REF_BASE && -n "$GIT_REPLACE_REF_BASE" ]]; then
-  log_error "GIT_REPLACE_REF_BASE is set; Stage-0 refuses alternate Git replacement namespaces. Unset the variable and retry."
-  exit 1
-fi
+reject_git_repository_environment() {
+  local name
+  for name in \
+    GIT_DIR \
+    GIT_WORK_TREE \
+    GIT_COMMON_DIR \
+    GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    GIT_INDEX_FILE \
+    GIT_GRAFT_FILE \
+    GIT_SHALLOW_FILE \
+    GIT_IMPLICIT_WORK_TREE \
+    GIT_NAMESPACE \
+    GIT_NO_REPLACE_OBJECTS \
+    GIT_REPLACE_REF_BASE \
+    GIT_PREFIX \
+    GIT_INTERNAL_SUPER_PREFIX \
+    GIT_CONFIG \
+    GIT_CONFIG_SYSTEM \
+    GIT_CONFIG_GLOBAL \
+    GIT_CONFIG_NOSYSTEM \
+    GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT; do
+    if [[ -v "$name" ]]; then
+      log_error "$name is set; Stage-0 refuses repository-local Git environment overrides. Unset the variable and retry."
+      return 1
+    fi
+  done
+  while IFS= read -r name; do
+    case "$name" in
+      GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+        log_error "$name is set; Stage-0 refuses repository-local Git environment overrides. Unset the variable and retry."
+        return 1
+        ;;
+    esac
+  done < <(compgen -A variable)
+}
+
+reject_git_repository_environment || exit 1
 
 if [[ ! -r /etc/os-release ]]; then
   log_error "Unsupported host: /etc/os-release is missing."
@@ -783,7 +818,7 @@ reject_plaintext_gh_credentials() {
         explicit_key_indent=indent
         if (pending_explicit_key_node) {
           if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) next
-          if (indent > pending_explicit_key_indent) {
+          if (indent > pending_explicit_key_indent || (flow_depth > 0 && indent == pending_explicit_key_indent)) {
             explicit_key=1
             explicit_key_indent=pending_explicit_key_indent
           }
@@ -795,21 +830,21 @@ reject_plaintext_gh_credentials() {
           c=substr(line, i, 1)
           if (c ~ /[[:space:]]/) { i++; continue }
           if (c == "#") break
-          if (c == "{" || c == ",") {
-            if (c == "{") flow_depth++
+          if (c == "{" || c == "[" || c == ",") {
+            if (c == "{" || c == "[") flow_depth++
             previous=c
             explicit_key=0
             i++
             continue
           }
-          if (c == "}") {
+          if (c == "}" || c == "]") {
             if (flow_depth > 0) flow_depth--
             previous=c
             explicit_key=0
             i++
             continue
           }
-          entry=(previous == "" || previous == "{" || previous == ",")
+          entry=(previous == "" || previous == "{" || previous == "[" || previous == ",")
           if (entry && c == "?") {
             explicit_key=1
             explicit_key_indent=indent
@@ -1116,7 +1151,7 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
   fi
-  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
+  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
     log_error "Existing clone is not clean; refusing to modify or report it as canonical."
     exit 1
   fi
@@ -1154,7 +1189,7 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
-  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
+  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
     log_error "Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1171,7 +1206,7 @@ if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/
   log_error "Clone has Git replacement refs; refusing canonical onboarding readback."
   exit 1
 fi
-if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
+if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
   log_error "Clone is dirty after checkout; refusing canonical onboarding readback."
   exit 1
 fi
