@@ -302,6 +302,11 @@ reject_github_token_environment() {
 
 reject_github_token_environment
 
+if [[ -v GIT_REPLACE_REF_BASE && -n "$GIT_REPLACE_REF_BASE" ]]; then
+  log_error "GIT_REPLACE_REF_BASE is set; Stage-0 refuses alternate Git replacement namespaces. Unset the variable and retry."
+  exit 1
+fi
+
 if [[ ! -r /etc/os-release ]]; then
   log_error "Unsupported host: /etc/os-release is missing."
   exit 1
@@ -455,25 +460,30 @@ reject_plaintext_gh_credentials() {
       function value_node_position(line, pos, n, c, start, tag) {
         value_node_explicit_string=0
         pos=value_position(line, pos, n)
-        while (pos <= n && substr(line, pos, 1) == "!") {
+        while (pos <= n && (substr(line, pos, 1) == "!" || substr(line, pos, 1) == "&")) {
           start=pos
-          pos++
-          if (substr(line, pos, 1) == "<") {
+          if (substr(line, pos, 1) == "&") {
             pos++
-            while (pos <= n && substr(line, pos, 1) != ">") pos++
-            if (pos <= n) pos++
-          } else {
             while (pos <= n && substr(line, pos, 1) !~ /[[:space:]{}\[\],]/) pos++
+          } else {
+            pos++
+            if (substr(line, pos, 1) == "<") {
+              pos++
+              while (pos <= n && substr(line, pos, 1) != ">") pos++
+              if (pos <= n) pos++
+            } else {
+              while (pos <= n && substr(line, pos, 1) !~ /[[:space:]{}\[\],]/) pos++
+            }
+            tag=substr(line, start, pos - start)
+            if (tag_is_string(tag)) value_node_explicit_string=1
           }
-          tag=substr(line, start, pos - start)
-          if (tag_is_string(tag)) value_node_explicit_string=1
           pos=value_position(line, pos, n)
         }
         return pos
       }
       function value_tag_only(line, pos, n, resolved) {
         pos=value_position(line, pos, n)
-        if (substr(line, pos, 1) != "!") {
+        if (substr(line, pos, 1) != "!" && substr(line, pos, 1) != "&") {
           value_tag_only_explicit_string=0
           return 0
         }
@@ -612,7 +622,7 @@ reject_plaintext_gh_credentials() {
             next
           }
           if (!pending_oauth_block_scalar && line ~ /^[[:space:]]*#/) next
-          if (pending_oauth_value_tag_only && indent > pending_oauth_indent) {
+          if (pending_oauth_value_tag_only && (indent > pending_oauth_indent || pending_oauth_flow_value)) {
             if (value_tag_only(line, 1, n)) {
               if (value_tag_only_explicit_string) pending_oauth_value_explicit_string=1
               next
@@ -822,6 +832,19 @@ reject_plaintext_gh_credentials() {
             } else {
               while (i <= n && substr(line, i, 1) !~ /[[:space:]{}\[\],]/) i++
             }
+            j=i
+            while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+            if (explicit_key && (j > n || substr(line, j, 1) == "#")) {
+              pending_explicit_key_node=1
+              pending_explicit_key_indent=explicit_key_indent
+              break
+            }
+            i=j
+            continue
+          }
+          if (entry && c == "&") {
+            i++
+            while (i <= n && substr(line, i, 1) !~ /[[:space:]{}\[\],]/) i++
             j=i
             while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
             if (explicit_key && (j > n || substr(line, j, 1) == "#")) {
