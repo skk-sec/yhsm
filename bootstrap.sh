@@ -416,6 +416,42 @@ reject_plaintext_gh_credentials() {
         while (pos <= n && substr(line, pos, 1) ~ /[[:space:]]/) pos++
         return pos
       }
+      function percent_decode(value, out, i, c, high, low) {
+        out=""
+        for (i=1; i<=length(value); i++) {
+          c=substr(value, i, 1)
+          if (c == "%" && i + 2 <= length(value)) {
+            high=hex_digit(substr(value, i + 1, 1))
+            low=hex_digit(substr(value, i + 2, 1))
+            if (high >= 0 && low >= 0) {
+              out=out sprintf("%c", high * 16 + low)
+              i+=2
+              continue
+            }
+          }
+          out=out c
+        }
+        return out
+      }
+      function tag_is_string(tag, second, handle, suffix, expanded) {
+        if (substr(tag, 1, 2) == "!<" && substr(tag, length(tag), 1) == ">") {
+          expanded=substr(tag, 3, length(tag) - 3)
+          return percent_decode(expanded) == "tag:yaml.org,2002:str"
+        }
+        if (substr(tag, 1, 1) != "!") return 0
+        second=index(substr(tag, 2), "!")
+        if (second) {
+          second++
+          handle=substr(tag, 1, second)
+          suffix=substr(tag, second + 1)
+        } else {
+          handle="!"
+          suffix=substr(tag, 2)
+        }
+        if (!(handle in tag_handle_prefix)) return 0
+        expanded=tag_handle_prefix[handle] suffix
+        return percent_decode(expanded) == "tag:yaml.org,2002:str"
+      }
       function value_node_position(line, pos, n, c, start, tag) {
         value_node_explicit_string=0
         pos=value_position(line, pos, n)
@@ -430,10 +466,20 @@ reject_plaintext_gh_credentials() {
             while (pos <= n && substr(line, pos, 1) !~ /[[:space:]{}\[\],]/) pos++
           }
           tag=substr(line, start, pos - start)
-          if (tag == "!!str" || tag == "!<tag:yaml.org,2002:str>") value_node_explicit_string=1
+          if (tag_is_string(tag)) value_node_explicit_string=1
           pos=value_position(line, pos, n)
         }
         return pos
+      }
+      function value_tag_only(line, pos, n, resolved) {
+        pos=value_position(line, pos, n)
+        if (substr(line, pos, 1) != "!") {
+          value_tag_only_explicit_string=0
+          return 0
+        }
+        resolved=value_node_position(line, pos, n)
+        value_tag_only_explicit_string=value_node_explicit_string
+        return resolved > n || substr(line, resolved, 1) == "#"
       }
       function empty_value_tail(line, pos, n, c) {
         if (pos > n) return 1
@@ -446,9 +492,9 @@ reject_plaintext_gh_credentials() {
         }
         return c == "," || c == "}"
       }
-      function value_present(line, pos, n, c, j, word, explicit_string) {
+      function value_present(line, pos, n, force_string, c, j, word, explicit_string) {
         pos=value_node_position(line, pos, n)
-        explicit_string=value_node_explicit_string
+        explicit_string=force_string || value_node_explicit_string
         if (pos > n) return 0
         c=substr(line, pos, 1)
         if (c == "}" || c == "," || c == "#" || block_scalar_value(line, pos, n)) return 0
@@ -512,6 +558,7 @@ reject_plaintext_gh_credentials() {
       BEGIN {
         sq=sprintf("%c", 39)
         invalid_escape=sprintf("%c", 1)
+        tag_handle_prefix["!!"]="tag:yaml.org,2002:"
         in_block_scalar=0
         block_indent=-1
         pending_oauth_value=0
@@ -520,6 +567,8 @@ reject_plaintext_gh_credentials() {
         pending_oauth_block_preserves_blank=0
         pending_oauth_flow_value=0
         pending_oauth_empty_quoted_value=0
+        pending_oauth_value_tag_only=0
+        pending_oauth_value_explicit_string=0
         pending_explicit_oauth_key=0
         pending_explicit_oauth_indent=-1
         pending_explicit_key_node=0
@@ -542,6 +591,11 @@ reject_plaintext_gh_credentials() {
         sub(/\r$/, "", line)
         n=length(line)
         indent=leading_spaces(line)
+        if (line ~ /^%TAG[[:space:]]+/) {
+          directive_count=split(line, directive_fields, /[[:space:]]+/)
+          if (directive_count >= 3) tag_handle_prefix[directive_fields[2]]=directive_fields[3]
+          next
+        }
         if (pending_oauth_empty_quoted_value) {
           pos=value_position(line, 1, n)
           if (substr(line, pos, 1) == "\\" && pos == n) next
@@ -558,7 +612,25 @@ reject_plaintext_gh_credentials() {
             next
           }
           if (!pending_oauth_block_scalar && line ~ /^[[:space:]]*#/) next
-          if (pending_oauth_flow_value) {
+          if (pending_oauth_value_tag_only && indent > pending_oauth_indent) {
+            if (value_tag_only(line, 1, n)) {
+              if (value_tag_only_explicit_string) pending_oauth_value_explicit_string=1
+              next
+            }
+            if (empty_quoted_value_continues(line, 1, n)) {
+              pending_oauth_empty_quoted_value=1
+              pending_oauth_value=0
+              next
+            }
+            if (value_present(line, 1, n, pending_oauth_value_explicit_string)) {
+              found=1
+              next
+            }
+            pending_oauth_value=0
+            pending_oauth_value_tag_only=0
+            pending_oauth_value_explicit_string=0
+            next
+          } else if (pending_oauth_flow_value) {
             pos=value_position(line, 1, n)
             if (value_present(line, pos, n)) {
               found=1
@@ -572,6 +644,8 @@ reject_plaintext_gh_credentials() {
           pending_oauth_block_scalar=0
           pending_oauth_block_preserves_blank=0
           pending_oauth_flow_value=0
+          pending_oauth_value_tag_only=0
+          pending_oauth_value_explicit_string=0
         }
         if (in_explicit_quoted_key) {
           pos=value_position(line, 1, n)
@@ -625,6 +699,8 @@ reject_plaintext_gh_credentials() {
             pending_oauth_value=1
             pending_oauth_indent=explicit_quoted_key_mapping_indent
             pending_oauth_flow_value=flow_depth > 0
+            pending_oauth_value_tag_only=value_tag_only(line, j + 1, n)
+            pending_oauth_value_explicit_string=value_tag_only_explicit_string
             pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
             pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, j + 1, n)
             next
@@ -684,6 +760,8 @@ reject_plaintext_gh_credentials() {
               pending_oauth_value=1
               pending_oauth_indent=indent
               pending_oauth_flow_value=flow_depth > 0
+              pending_oauth_value_tag_only=value_tag_only(line, pos + 1, n)
+              pending_oauth_value_explicit_string=value_tag_only_explicit_string
               pending_oauth_block_scalar=block_scalar_value(line, pos + 1, n)
               pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, pos + 1, n)
               next
@@ -837,6 +915,8 @@ reject_plaintext_gh_credentials() {
                 pending_oauth_value=1
                 pending_oauth_indent=indent
                 pending_oauth_flow_value=flow_depth > 0
+                pending_oauth_value_tag_only=value_tag_only(line, j + 1, n)
+                pending_oauth_value_explicit_string=value_tag_only_explicit_string
                 pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
                 pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, j + 1, n)
                 break
@@ -879,6 +959,8 @@ reject_plaintext_gh_credentials() {
                 pending_oauth_value=1
                 pending_oauth_indent=indent
                 pending_oauth_flow_value=flow_depth > 0
+                pending_oauth_value_tag_only=value_tag_only(line, j + 1, n)
+                pending_oauth_value_explicit_string=value_tag_only_explicit_string
                 pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
                 pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, j + 1, n)
                 break
@@ -1003,6 +1085,10 @@ if [[ -d "$dest_path/.git" ]]; then
     "$clone_url"|"https://github.com/$TARGET_REPO") ;;
     *) log_error "Existing clone has an unexpected origin remote."; exit 1 ;;
   esac
+  if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
+    log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
+    exit 1
+  fi
   if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
@@ -1056,6 +1142,10 @@ fi
 
 if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
   log_error "Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
+  exit 1
+fi
+if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
+  log_error "Clone has Git replacement refs; refusing canonical onboarding readback."
   exit 1
 fi
 if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
