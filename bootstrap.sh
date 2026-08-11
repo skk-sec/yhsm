@@ -346,7 +346,7 @@ reject_existing_clone_execution_config() {
   local repo_path="$1" config_records config_errors config_rc scope entry submodule_output
   config_records="$(mktemp)"
   config_errors="$(mktemp)"
-  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper)$' >"$config_records" 2>"$config_errors"; then
+  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree)$' >"$config_records" 2>"$config_errors"; then
     config_rc=0
   else
     config_rc=$?
@@ -380,7 +380,7 @@ reject_existing_clone_execution_config() {
       if [[ "$scope" == 'local' || "$scope" == 'worktree' ]]; then
         exec 3<&-
         rm -f -- "$config_records" "$config_errors"
-        log_error "Existing clone has repository-local or worktree Git execution configuration (filter or credential helper); refusing to inspect, authenticate, or update it."
+        log_error "Existing clone has repository-local or worktree Git execution configuration (filter, credential helper, or worktree redirection); refusing to inspect, authenticate, or update it."
         return 1
       fi
     done
@@ -393,7 +393,7 @@ reject_existing_clone_execution_config() {
       bash -c '\''
         records="$(mktemp)" || exit 93
         errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
-        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper)$" >"$records" 2>"$errors"; then
+        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree)$" >"$records" 2>"$errors"; then
           rc=0
         else
           rc=$?
@@ -1322,7 +1322,11 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
     exit 1
   fi
-  if git -c core.fsmonitor=false -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
+  if ! repository_index="$(git -c core.fsmonitor=false -C "$dest_path" ls-files -v)"; then
+    log_error "Unable to inspect existing clone index flags; refusing canonical onboarding readback."
+    exit 1
+  fi
+  if grep -Eq '^[a-zS]' <<<"$repository_index"; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
   fi
@@ -1380,10 +1384,22 @@ if [[ -d "$dest_path/.git" ]]; then
   validate_initialized_submodules "$dest_path" || exit 1
 else
   log_info "Cloning customer repository."
-  git -c core.hooksPath=/dev/null clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
+  trusted_template_dir="$(mktemp -d)"
+  if git -c core.hooksPath=/dev/null clone --template="$trusted_template_dir" --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"; then
+    :
+  else
+    clone_rc=$?
+    rm -rf -- "$trusted_template_dir"
+    exit "$clone_rc"
+  fi
+  rm -rf -- "$trusted_template_dir"
 fi
 
-if git -c core.fsmonitor=false -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
+if ! repository_index="$(git -c core.fsmonitor=false -C "$dest_path" ls-files -v)"; then
+  log_error "Unable to inspect final clone index flags; refusing canonical onboarding readback."
+  exit 1
+fi
+if grep -Eq '^[a-zS]' <<<"$repository_index"; then
   log_error "Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
   exit 1
 fi
