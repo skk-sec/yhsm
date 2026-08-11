@@ -342,34 +342,110 @@ reject_git_repository_environment() {
 
 reject_git_repository_environment || exit 1
 
-reject_git_config_matches() {
-  local description="$1"
-  shift
-  local config_output config_rc
-  if config_output="$(git "$@" 2>&1)"; then
-    if [[ -n "$config_output" ]]; then
-      log_error "$description"
-      return 1
-    fi
-    return 0
+reject_existing_clone_execution_config() {
+  local repo_path="$1" config_records config_errors config_rc scope entry submodule_output
+  config_records="$(mktemp)"
+  config_errors="$(mktemp)"
+  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper)$' >"$config_records" 2>"$config_errors"; then
+    config_rc=0
   else
     config_rc=$?
   fi
-  if [[ "$config_rc" -eq 1 && -z "$config_output" ]]; then
-    return 0
+  if [[ "$config_rc" -ne 0 && ( "$config_rc" -ne 1 || -s "$config_records" || -s "$config_errors" ) ]]; then
+    rm -f -- "$config_records" "$config_errors"
+    log_error "Unable to inspect Git execution configuration; refusing Stage-0 onboarding."
+    return 1
   fi
-  log_error "Unable to inspect Git execution configuration; refusing Stage-0 onboarding."
-  return 1
-}
+  if [[ "$config_rc" -eq 0 ]]; then
+    exec 3<"$config_records"
+    while true; do
+      scope=''
+      if IFS= read -r -d '' scope <&3; then
+        :
+      elif [[ -n "$scope" ]]; then
+        exec 3<&-
+        rm -f -- "$config_records" "$config_errors"
+        log_error "Unable to parse Git execution configuration; refusing Stage-0 onboarding."
+        return 1
+      else
+        break
+      fi
+      entry=''
+      if ! IFS= read -r -d '' entry <&3 || [[ "$entry" != *$'\n'* ]]; then
+        exec 3<&-
+        rm -f -- "$config_records" "$config_errors"
+        log_error "Unable to parse Git execution configuration; refusing Stage-0 onboarding."
+        return 1
+      fi
+      if [[ "$scope" == 'local' || "$scope" == 'worktree' ]]; then
+        exec 3<&-
+        rm -f -- "$config_records" "$config_errors"
+        log_error "Existing clone has repository-local or worktree Git execution configuration (filter or credential helper); refusing to inspect, authenticate, or update it."
+        return 1
+      fi
+    done
+    exec 3<&-
+  fi
+  rm -f -- "$config_records" "$config_errors"
 
-reject_existing_clone_execution_config() {
-  local repo_path="$1"
-  reject_git_config_matches \
-    "Existing clone has executable Git filter configuration; refusing to inspect or update its worktree." \
-    -C "$repo_path" config --local --get-regexp '^filter\..*\.(clean|smudge|process)$' || return 1
-  reject_git_config_matches \
-    "Existing clone has a repository-local Git credential helper; refusing authenticated fetch." \
-    -C "$repo_path" config --local --get-all credential.helper
+  if ! submodule_output="$(
+    git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+      bash -c '\''
+        records="$(mktemp)" || exit 93
+        errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
+        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper)$" >"$records" 2>"$errors"; then
+          rc=0
+        else
+          rc=$?
+        fi
+        if [[ "$rc" -ne 0 && ( "$rc" -ne 1 || -s "$records" || -s "$errors" ) ]]; then
+          rm -f -- "$records" "$errors"
+          printf "%s\\n" STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED
+          exit 93
+        fi
+        if [[ "$rc" -eq 0 ]]; then
+          exec 3<"$records"
+          while true; do
+            scope=""
+            if IFS= read -r -d "" scope <&3; then
+              :
+            elif [[ -n "$scope" ]]; then
+              exec 3<&-
+              rm -f -- "$records" "$errors"
+              printf "%s\\n" STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED
+              exit 93
+            else
+              break
+            fi
+            entry=""
+            if ! IFS= read -r -d "" entry <&3 || [[ "$entry" != *$'\''\\n'\''* ]]; then
+              exec 3<&-
+              rm -f -- "$records" "$errors"
+              printf "%s\\n" STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED
+              exit 93
+            fi
+            if [[ "$scope" == local || "$scope" == worktree ]]; then
+              exec 3<&-
+              rm -f -- "$records" "$errors"
+              printf "%s\\n" STAGE0_SUBMODULE_EXECUTION_CONFIG
+              exit 95
+            fi
+          done
+          exec 3<&-
+        fi
+        rm -f -- "$records" "$errors"
+      '\''
+    ' 2>&1
+  )"; then
+    if [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED"* ]]; then
+      log_error "Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding."
+    elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG"* ]]; then
+      log_error "An initialized submodule has repository-local or worktree Git execution configuration; refusing parent worktree inspection or authenticated fetch."
+    else
+      log_error "Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding."
+    fi
+    return 1
+  fi
 }
 
 if [[ ! -r /etc/os-release ]]; then
