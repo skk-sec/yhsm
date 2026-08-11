@@ -890,6 +890,20 @@ reject_plaintext_gh_credentials() {
             i=j
             continue
           }
+          if (entry && c == "-") {
+            j=i + 1
+            while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+            if (block_scalar_value(line, j, n)) {
+              in_block_scalar=1
+              block_indent=indent
+              break
+            }
+          }
+          if (entry && !explicit_key && block_scalar_value(line, i, n)) {
+            in_block_scalar=1
+            block_indent=indent
+            break
+          }
           if (entry && explicit_key && block_scalar_value(line, i, n)) {
             in_explicit_key_scalar=1
             explicit_key_scalar_parent_indent=indent
@@ -1134,6 +1148,14 @@ validate_initialized_submodules() {
   local repo_path="$1" submodule_output
   if ! submodule_output="$(
     git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+      submodule_replace_refs="$(git for-each-ref --format="%(refname)" refs/replace/)" || {
+        printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
+        exit 93
+      }
+      if test -n "$submodule_replace_refs"; then
+        printf "%s\n" STAGE0_SUBMODULE_REPLACE_REF
+        exit 94
+      fi
       submodule_index="$(git ls-files -v)" || {
         printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
         exit 93
@@ -1157,7 +1179,9 @@ validate_initialized_submodules() {
       fi
     ' 2>&1
   )"; then
-    if [[ "$submodule_output" == *"STAGE0_SUBMODULE_HIDDEN_INDEX"* ]]; then
+    if [[ "$submodule_output" == *"STAGE0_SUBMODULE_REPLACE_REF"* ]]; then
+      log_error "An initialized submodule has Git replacement refs; refusing canonical onboarding readback."
+    elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_HIDDEN_INDEX"* ]]; then
       log_error "An initialized submodule has hidden index flags; refusing canonical onboarding readback."
     elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_DIRTY"* ]]; then
       log_error "An initialized submodule is not clean; refusing canonical onboarding readback."
