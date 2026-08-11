@@ -1156,7 +1156,7 @@ validate_initialized_submodules() {
         printf "%s\n" STAGE0_SUBMODULE_REPLACE_REF
         exit 94
       fi
-      submodule_index="$(git ls-files -v)" || {
+      submodule_index="$(git -c core.fsmonitor=false ls-files -v)" || {
         printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
         exit 93
       }
@@ -1169,7 +1169,7 @@ validate_initialized_submodules() {
         printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
         exit 93
       fi
-      submodule_status="$(git status --porcelain --untracked-files=all --ignore-submodules=none)" || {
+      submodule_status="$(git -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)" || {
         printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
         exit 93
       }
@@ -1211,11 +1211,11 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
     exit 1
   fi
-  if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
+  if git -c core.fsmonitor=false -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
   fi
-  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
+  if [[ -n "$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
     log_error "Existing clone is not clean; refusing to modify or report it as canonical."
     exit 1
   fi
@@ -1229,7 +1229,7 @@ if [[ -d "$dest_path/.git" ]]; then
       ignored_collision=1
       break
     fi
-  done < <(git -C "$dest_path" ls-files --others --ignored --exclude-standard -z)
+  done < <(git -c core.fsmonitor=false -C "$dest_path" ls-files --others --ignored --exclude-standard -z)
   if [[ "$ignored_collision" -eq 1 ]]; then
     log_error "Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state."
     exit 1
@@ -1254,7 +1254,7 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
-  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
+  if [[ -n "$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
     log_error "Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1264,7 +1264,7 @@ else
   git -c core.hooksPath=/dev/null clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
 fi
 
-if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
+if git -c core.fsmonitor=false -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
   log_error "Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
   exit 1
 fi
@@ -1272,7 +1272,7 @@ if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/
   log_error "Clone has Git replacement refs; refusing canonical onboarding readback."
   exit 1
 fi
-if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
+if [[ -n "$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
   log_error "Clone is dirty after checkout; refusing canonical onboarding readback."
   exit 1
 fi
