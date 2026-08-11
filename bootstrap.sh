@@ -163,7 +163,16 @@ print_argv_banner() {
       masked+=("***")
       continue
     fi
-    masked+=("$(mask_argv_arg "$arg")")
+    case "$lower" in
+      --private-target|--public-target|--issue-smoke-test|--dry-run|-h|--help)
+        masked+=("$arg")
+        ;;
+      *)
+        # Unknown operands have not passed option validation yet. Never copy
+        # them verbatim into the startup banner.
+        masked+=("***")
+        ;;
+    esac
   done
   printf '[argv] %s %s\n' "$(basename -- "$0")" "${masked[*]}"
 }
@@ -367,6 +376,15 @@ else
   log_ok "Baseline client-access packages already present."
 fi
 
+effective_clone_url="$(git ls-remote --get-url "$clone_url" 2>/dev/null)" || {
+  log_error "Git could not resolve the requested GitHub clone URL without contacting the target repository."
+  exit 1
+}
+[[ "$effective_clone_url" == "$clone_url" ]] || {
+  log_error "Git URL rewriting is active for the requested GitHub repository; refusing clone or fetch from a substituted remote."
+  exit 1
+}
+
 install_gh() {
   if command -v gh >/dev/null 2>&1; then log_ok "GitHub CLI already present."; return; fi
   command -v curl >/dev/null 2>&1 || { log_error "curl installation did not produce curl before GitHub CLI bootstrap."; return 1; }
@@ -448,6 +466,10 @@ reject_plaintext_gh_credentials() {
         }
         return 0
       }
+      function empty_quoted_value_continues(line, pos, n) {
+        pos=value_position(line, pos, n)
+        return substr(line, pos, 1) == "\"" && substr(line, pos + 1, 1) == "\\" && pos + 1 == n
+      }
       function hex_digit(c, p) {
         p=index("0123456789abcdef", tolower(c))
         return p ? p - 1 : -1
@@ -477,6 +499,7 @@ reject_plaintext_gh_credentials() {
         pending_oauth_block_scalar=0
         pending_oauth_block_preserves_blank=0
         pending_oauth_flow_value=0
+        pending_oauth_empty_quoted_value=0
         pending_explicit_oauth_key=0
         pending_explicit_oauth_indent=-1
         pending_explicit_key_node=0
@@ -499,6 +522,16 @@ reject_plaintext_gh_credentials() {
         sub(/\r$/, "", line)
         n=length(line)
         indent=leading_spaces(line)
+        if (pending_oauth_empty_quoted_value) {
+          pos=value_position(line, 1, n)
+          if (substr(line, pos, 1) == "\\" && pos == n) next
+          if (substr(line, pos, 1) == "\"" && empty_value_tail(line, pos + 1, n)) {
+            pending_oauth_empty_quoted_value=0
+            next
+          }
+          found=1
+          next
+        }
         if (pending_oauth_value) {
           if (line ~ /^[[:space:]]*$/) {
             if (pending_oauth_block_scalar && pending_oauth_block_preserves_blank) found=1
@@ -561,6 +594,10 @@ reject_plaintext_gh_credentials() {
           j=pos
           while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
           if (explicit_quoted_key_token == "oauth_token" && substr(line, j, 1) == ":") {
+            if (empty_quoted_value_continues(line, j + 1, n)) {
+              pending_oauth_empty_quoted_value=1
+              next
+            }
             if (value_present(line, j + 1, n)) {
               found=1
               next
@@ -678,6 +715,17 @@ reject_plaintext_gh_credentials() {
             i++
             continue
           }
+          if (entry && c == "!") {
+            i++
+            if (substr(line, i, 1) == "<") {
+              i++
+              while (i <= n && substr(line, i, 1) != ">") i++
+              if (i <= n) i++
+            } else {
+              while (i <= n && substr(line, i, 1) !~ /[[:space:]{}\[\],]/) i++
+            }
+            continue
+          }
           if (entry && explicit_key && block_scalar_value(line, i, n)) {
             in_explicit_key_scalar=1
             explicit_key_scalar_parent_indent=indent
@@ -749,6 +797,10 @@ reject_plaintext_gh_credentials() {
             j=i
             while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
             if (entry && token == "oauth_token" && substr(line, j, 1) == ":") {
+              if (empty_quoted_value_continues(line, j + 1, n)) {
+                pending_oauth_empty_quoted_value=1
+                break
+              }
               if (value_present(line, j + 1, n)) {
                 found=1
                 break
@@ -787,6 +839,10 @@ reject_plaintext_gh_credentials() {
             j=i
             while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
             if (token == "oauth_token" && substr(line, j, 1) == ":") {
+              if (empty_quoted_value_continues(line, j + 1, n)) {
+                pending_oauth_empty_quoted_value=1
+                break
+              }
               if (value_present(line, j + 1, n)) {
                 found=1
                 break
@@ -914,11 +970,15 @@ fi
 remote_ref="refs/remotes/origin/$TARGET_BRANCH"
 
 if [[ -d "$dest_path/.git" ]]; then
-  actual_remote="$(git -C "$dest_path" config --get remote.origin.url 2>/dev/null || true)"
+  actual_remote="$(git -C "$dest_path" remote get-url origin 2>/dev/null || true)"
   case "$actual_remote" in
     "$clone_url"|"https://github.com/$TARGET_REPO") ;;
     *) log_error "Existing clone has an unexpected origin remote."; exit 1 ;;
   esac
+  if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
+    log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
+    exit 1
+  fi
   if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
     log_error "Existing clone is not clean; refusing to modify or report it as canonical."
     exit 1
@@ -966,6 +1026,15 @@ else
   git clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
 fi
 
+if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
+  log_error "Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
+  exit 1
+fi
+if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
+  log_error "Clone is dirty after checkout; refusing canonical onboarding readback."
+  exit 1
+fi
+
 git -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
   log_error "Clone did not produce the requested remote branch; tags cannot satisfy --target-branch."
   exit 1
@@ -981,7 +1050,7 @@ remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
   log_error "Clone head is not exact to the requested remote branch."
   exit 1
 }
-repo_remote="$(git -C "$dest_path" config --get remote.origin.url)"
+repo_remote="$(git -C "$dest_path" remote get-url origin)"
 
 printf '%s\n' '--- STAGE-0 READBACK ---'
 printf 'repository=%s\n' "$TARGET_REPO"
