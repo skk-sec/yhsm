@@ -72,6 +72,7 @@ sensitive_argv_value() {
   if [[ "$value" =~ ^([^=[:space:]]+)=(.*)$ ]] && sensitive_argv_key "${BASH_REMATCH[1]}"; then
     return 0
   fi
+  [[ "$value" =~ [A-Za-z][A-Za-z0-9+.-]*://[^/@[:space:]]+@ ]] && return 0
   [[ "$value" =~ (^|[^A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{8,}($|[^A-Za-z0-9_]) ]] && return 0
   [[ "$value" =~ (^|[^A-Za-z0-9_])github_pat_[A-Za-z0-9_]{8,}($|[^A-Za-z0-9_]) ]] && return 0
   [[ "$value" =~ (^|[^A-Za-z0-9-])xox[a-z]-[A-Za-z0-9-]{8,}($|[^A-Za-z0-9-]) ]] && return 0
@@ -374,11 +375,8 @@ install_gh() {
 
 reject_plaintext_gh_credentials() {
   local config_file="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
-  if [[ -f "$config_file" ]] && awk '
-      /^[[:space:]]*oauth_token:[[:space:]]*[^[:space:]#]/ { found=1 }
-      END { exit(found ? 0 : 1) }
-    ' "$config_file"; then
-    log_error "GitHub CLI has a plaintext token in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying."
+  if [[ -f "$config_file" ]] && grep -Eiq "(^|[^[:alnum:]_])[\"']?oauth_token[\"']?[[:space:]]*:" "$config_file"; then
+    log_error "GitHub CLI has a plaintext token key in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying."
     return 1
   fi
 }
@@ -507,6 +505,10 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
+  if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
+    log_error "Existing clone became non-clean during branch synchronization; refusing canonical readback."
+    exit 1
+  fi
 else
   log_info "Cloning customer repository."
   git clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
