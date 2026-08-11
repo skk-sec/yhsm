@@ -47,6 +47,13 @@ authorization_scheme_marker() {
   [[ "$lower" =~ ^[[:space:]]*(basic|bearer|digest|negotiate|ntlm)[[:space:]]*$ || "$lower" =~ ^[[:space:]]*(proxy-)?authorization:[[:space:]]*(basic|bearer|digest|negotiate|ntlm)[[:space:]]*$ ]]
 }
 
+stage0_value_option() {
+  case "${1,,}" in
+    --target-repo|--target-branch|--workdir) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 mask_argv_arg() {
   local arg="$1" key value
   if [[ "$arg" == *=* ]]; then
@@ -102,7 +109,7 @@ print_argv_banner() {
     esac
     if [[ "$mask_next" -eq 1 ]]; then
       masked+=("***")
-      if authorization_scheme_marker "$arg"; then
+      if authorization_scheme_marker "$arg" || stage0_value_option "$arg" || { [[ "$arg" == -* ]] && sensitive_argv_key "$arg"; }; then
         mask_next=1
       else
         mask_next=0
@@ -391,15 +398,35 @@ reject_plaintext_gh_credentials() {
         while (pos <= n && substr(line, pos, 1) ~ /[[:space:]]/) pos++
         return pos
       }
-      function value_present(line, pos, n, c) {
+      function empty_value_tail(line, pos, n, c) {
+        if (pos > n) return 1
+        c=substr(line, pos, 1)
+        if (c ~ /[[:space:]]/) {
+          pos=value_position(line, pos, n)
+          if (pos > n) return 1
+          c=substr(line, pos, 1)
+          return c == "#" || c == "," || c == "}"
+        }
+        return c == "," || c == "}"
+      }
+      function value_present(line, pos, n, c, j, word) {
         pos=value_position(line, pos, n)
         if (pos > n) return 0
         c=substr(line, pos, 1)
-        return c != "}" && c != "," && c != "#"
+        if (c == "}" || c == "," || c == "#" || block_scalar_value(line, pos, n)) return 0
+        if (c == "~" && empty_value_tail(line, pos + 1, n)) return 0
+        word=tolower(substr(line, pos, 4))
+        if (word == "null" && empty_value_tail(line, pos + 4, n)) return 0
+        if ((c == "\"" || c == sq) && substr(line, pos + 1, 1) == c && empty_value_tail(line, pos + 2, n)) return 0
+        if (c == "{" || c == "[") {
+          j=value_position(line, pos + 1, n)
+          if (((c == "{" && substr(line, j, 1) == "}") || (c == "[" && substr(line, j, 1) == "]")) && empty_value_tail(line, j + 1, n)) return 0
+        }
+        return 1
       }
       function value_deferred(line, pos, n, c) {
         pos=value_position(line, pos, n)
-        return pos > n || substr(line, pos, 1) == "#"
+        return pos > n || substr(line, pos, 1) == "#" || block_scalar_value(line, pos, n)
       }
       function block_scalar_value(line, pos, n, c) {
         pos=value_position(line, pos, n)
@@ -409,6 +436,16 @@ reject_plaintext_gh_credentials() {
         while (pos <= n && substr(line, pos, 1) ~ /[1-9+-]/) pos++
         pos=value_position(line, pos, n)
         return pos > n || substr(line, pos, 1) == "#"
+      }
+      function block_scalar_preserves_blank(line, pos, n, c) {
+        pos=value_position(line, pos, n) + 1
+        while (pos <= n) {
+          c=substr(line, pos, 1)
+          if (c == "-") return 0
+          if (c ~ /[[:space:]]/ || c == "#") break
+          pos++
+        }
+        return 1
       }
       function hex_digit(c, p) {
         p=index("0123456789abcdef", tolower(c))
@@ -436,10 +473,15 @@ reject_plaintext_gh_credentials() {
         block_indent=-1
         pending_oauth_value=0
         pending_oauth_indent=-1
+        pending_oauth_block_scalar=0
+        pending_oauth_block_preserves_blank=0
         pending_explicit_oauth_key=0
         pending_explicit_oauth_indent=-1
+        pending_explicit_key_node=0
+        pending_explicit_key_indent=-1
         in_explicit_key_scalar=0
         explicit_key_scalar_parent_indent=-1
+        explicit_key_scalar_mapping_indent=-1
         explicit_key_scalar_content_indent=-1
         explicit_key_scalar_indent_indicator=0
         explicit_key_scalar_chomp=""
@@ -452,12 +494,18 @@ reject_plaintext_gh_credentials() {
         n=length(line)
         indent=leading_spaces(line)
         if (pending_oauth_value) {
-          if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) next
+          if (line ~ /^[[:space:]]*$/) {
+            if (pending_oauth_block_scalar && pending_oauth_block_preserves_blank) found=1
+            next
+          }
+          if (!pending_oauth_block_scalar && line ~ /^[[:space:]]*#/) next
           if (indent > pending_oauth_indent) {
             found=1
             next
           }
           pending_oauth_value=0
+          pending_oauth_block_scalar=0
+          pending_oauth_block_preserves_blank=0
         }
         if (in_explicit_key_scalar) {
           if (line ~ /^[[:space:]]*$/) {
@@ -488,7 +536,7 @@ reject_plaintext_gh_credentials() {
           in_explicit_key_scalar=0
           if (explicit_key_scalar_chomp == "-" && explicit_key_scalar_seen && explicit_key_scalar_exact) {
             pending_explicit_oauth_key=1
-            pending_explicit_oauth_indent=explicit_key_scalar_parent_indent
+            pending_explicit_oauth_indent=explicit_key_scalar_mapping_indent
           }
         }
         if (in_block_scalar) {
@@ -507,14 +555,25 @@ reject_plaintext_gh_credentials() {
             if (value_deferred(line, pos + 1, n)) {
               pending_oauth_value=1
               pending_oauth_indent=indent
+              pending_oauth_block_scalar=block_scalar_value(line, pos + 1, n)
+              pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_preserves_blank(line, pos + 1, n)
               next
             }
           }
           pending_explicit_oauth_key=0
         }
+        explicit_key=0
+        explicit_key_indent=indent
+        if (pending_explicit_key_node) {
+          if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) next
+          if (indent > pending_explicit_key_indent) {
+            explicit_key=1
+            explicit_key_indent=pending_explicit_key_indent
+          }
+          pending_explicit_key_node=0
+        }
         i=1
         previous=""
-        explicit_key=0
         while (i <= n) {
           c=substr(line, i, 1)
           if (c ~ /[[:space:]]/) { i++; continue }
@@ -523,12 +582,21 @@ reject_plaintext_gh_credentials() {
           entry=(previous == "" || previous == "{" || previous == ",")
           if (entry && c == "?") {
             explicit_key=1
+            explicit_key_indent=indent
+            j=i + 1
+            while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+            if (j > n || substr(line, j, 1) == "#") {
+              pending_explicit_key_node=1
+              pending_explicit_key_indent=indent
+              break
+            }
             i++
             continue
           }
           if (entry && explicit_key && block_scalar_value(line, i, n)) {
             in_explicit_key_scalar=1
             explicit_key_scalar_parent_indent=indent
+            explicit_key_scalar_mapping_indent=explicit_key_indent
             explicit_key_scalar_content_indent=-1
             explicit_key_scalar_indent_indicator=0
             explicit_key_scalar_chomp=""
@@ -595,12 +663,14 @@ reject_plaintext_gh_credentials() {
               if (value_deferred(line, j + 1, n)) {
                 pending_oauth_value=1
                 pending_oauth_indent=indent
+                pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
+                pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_preserves_blank(line, j + 1, n)
                 break
               }
             }
             if (entry && explicit_key && token == "oauth_token" && (j > n || substr(line, j, 1) == "#")) {
               pending_explicit_oauth_key=1
-              pending_explicit_oauth_indent=indent
+              pending_explicit_oauth_indent=explicit_key_indent
               break
             }
             if (substr(line, j, 1) == ":") {
@@ -630,12 +700,14 @@ reject_plaintext_gh_credentials() {
               if (value_deferred(line, j + 1, n)) {
                 pending_oauth_value=1
                 pending_oauth_indent=indent
+                pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
+                pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_preserves_blank(line, j + 1, n)
                 break
               }
             }
             if (entry && explicit_key && token == "oauth_token" && (j > n || substr(line, j, 1) == "#")) {
               pending_explicit_oauth_key=1
-              pending_explicit_oauth_indent=indent
+              pending_explicit_oauth_indent=explicit_key_indent
               break
             }
             if (substr(line, j, 1) == ":") {
