@@ -1130,6 +1130,46 @@ if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   log_ok "Private repository and issue read access verified."
 fi
 
+validate_initialized_submodules() {
+  local repo_path="$1" submodule_output
+  if ! submodule_output="$(
+    git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+      submodule_index="$(git ls-files -v)" || {
+        printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
+        exit 93
+      }
+      printf "%s\n" "$submodule_index" | grep -Eq "^[a-zS]"
+      grep_rc=$?
+      if test "$grep_rc" -eq 0; then
+        printf "%s\n" STAGE0_SUBMODULE_HIDDEN_INDEX
+        exit 91
+      elif test "$grep_rc" -ne 1; then
+        printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
+        exit 93
+      fi
+      submodule_status="$(git status --porcelain --untracked-files=all --ignore-submodules=none)" || {
+        printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
+        exit 93
+      }
+      if test -n "$submodule_status"; then
+        printf "%s\n" STAGE0_SUBMODULE_DIRTY
+        exit 92
+      fi
+    ' 2>&1
+  )"; then
+    if [[ "$submodule_output" == *"STAGE0_SUBMODULE_HIDDEN_INDEX"* ]]; then
+      log_error "An initialized submodule has hidden index flags; refusing canonical onboarding readback."
+    elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_DIRTY"* ]]; then
+      log_error "An initialized submodule is not clean; refusing canonical onboarding readback."
+    elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_INSPECTION_FAILED"* ]]; then
+      log_error "Unable to inspect an initialized submodule; refusing canonical onboarding readback."
+    else
+      log_error "Unable to verify initialized submodule state; refusing canonical onboarding readback."
+    fi
+    return 1
+  fi
+}
+
 mkdir -p "$WORKDIR"
 if [[ -e "$dest_path" && ! -d "$dest_path/.git" ]]; then
   log_error "Clone destination exists but is not a Git repository."; exit 1
@@ -1155,6 +1195,7 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone is not clean; refusing to modify or report it as canonical."
     exit 1
   fi
+  validate_initialized_submodules "$dest_path" || exit 1
   log_info "Existing clean clone found; fetching exact remote branch."
   git -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
   remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
@@ -1170,16 +1211,16 @@ if [[ -d "$dest_path/.git" ]]; then
     exit 1
   fi
   if git -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
-    git -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
+    git -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
   else
-    git -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
+    git -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
     git -C "$dest_path" config "branch.$TARGET_BRANCH.remote" origin
     git -C "$dest_path" config "branch.$TARGET_BRANCH.merge" "refs/heads/$TARGET_BRANCH"
   fi
   local_head="$(git -C "$dest_path" rev-parse HEAD)"
   if [[ "$local_head" != "$remote_head" ]]; then
     if git -C "$dest_path" merge-base --is-ancestor "$local_head" "$remote_head"; then
-      git -C "$dest_path" merge --ff-only "$remote_head" --quiet
+      git -c core.hooksPath=/dev/null -C "$dest_path" merge --ff-only "$remote_head" --quiet
     else
       log_error "Existing clone does not exactly match origin/$TARGET_BRANCH and cannot be safely fast-forwarded."
       exit 1
@@ -1193,9 +1234,10 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback."
     exit 1
   fi
+  validate_initialized_submodules "$dest_path" || exit 1
 else
   log_info "Cloning customer repository."
-  git clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
+  git -c core.hooksPath=/dev/null clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
 fi
 
 if git -C "$dest_path" ls-files -v | grep -Eq '^[a-zS]'; then
@@ -1210,6 +1252,7 @@ if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all --ignor
   log_error "Clone is dirty after checkout; refusing canonical onboarding readback."
   exit 1
 fi
+validate_initialized_submodules "$dest_path" || exit 1
 
 git -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
   log_error "Clone did not produce the requested remote branch; tags cannot satisfy --target-branch."
@@ -1231,6 +1274,20 @@ case "$repo_remote" in
   "$clone_url"|"https://github.com/$TARGET_REPO") ;;
   *) log_error "Clone origin changed during checkout; refusing canonical onboarding readback."; exit 1 ;;
 esac
+server_ref="refs/heads/$TARGET_BRANCH"
+server_ref_line="$(git ls-remote --exit-code "$clone_url" "$server_ref")" || {
+  log_error "Unable to query the selected branch from the GitHub server for final canonical readback."
+  exit 1
+}
+if [[ "$server_ref_line" == *$'\n'* ]]; then
+  log_error "GitHub server returned an ambiguous branch ref during final canonical readback."
+  exit 1
+fi
+IFS=$'\t' read -r server_head server_ref_name <<< "$server_ref_line"
+[[ -n "$server_head" && "$server_ref_name" == "$server_ref" && "$repo_head" == "$server_head" ]] || {
+  log_error "Clone head is not exact to the freshly queried GitHub server branch."
+  exit 1
+}
 
 printf '%s\n' '--- STAGE-0 READBACK ---'
 printf 'repository=%s\n' "$TARGET_REPO"
