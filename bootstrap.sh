@@ -437,15 +437,16 @@ reject_plaintext_gh_credentials() {
         pos=value_position(line, pos, n)
         return pos > n || substr(line, pos, 1) == "#"
       }
-      function block_scalar_preserves_blank(line, pos, n, c) {
+      function block_scalar_keeps_blank(line, pos, n, c) {
         pos=value_position(line, pos, n) + 1
         while (pos <= n) {
           c=substr(line, pos, 1)
+          if (c == "+") return 1
           if (c == "-") return 0
           if (c ~ /[[:space:]]/ || c == "#") break
           pos++
         }
-        return 1
+        return 0
       }
       function hex_digit(c, p) {
         p=index("0123456789abcdef", tolower(c))
@@ -475,6 +476,7 @@ reject_plaintext_gh_credentials() {
         pending_oauth_indent=-1
         pending_oauth_block_scalar=0
         pending_oauth_block_preserves_blank=0
+        pending_oauth_flow_value=0
         pending_explicit_oauth_key=0
         pending_explicit_oauth_indent=-1
         pending_explicit_key_node=0
@@ -487,6 +489,10 @@ reject_plaintext_gh_credentials() {
         explicit_key_scalar_chomp=""
         explicit_key_scalar_seen=0
         explicit_key_scalar_exact=1
+        in_explicit_quoted_key=0
+        explicit_quoted_key_token=""
+        explicit_quoted_key_mapping_indent=-1
+        flow_depth=0
       }
       {
         line=$0
@@ -499,13 +505,78 @@ reject_plaintext_gh_credentials() {
             next
           }
           if (!pending_oauth_block_scalar && line ~ /^[[:space:]]*#/) next
-          if (indent > pending_oauth_indent) {
+          if (pending_oauth_flow_value) {
+            pos=value_position(line, 1, n)
+            if (value_present(line, pos, n)) {
+              found=1
+              next
+            }
+          } else if (indent > pending_oauth_indent) {
             found=1
             next
           }
           pending_oauth_value=0
           pending_oauth_block_scalar=0
           pending_oauth_block_preserves_blank=0
+          pending_oauth_flow_value=0
+        }
+        if (in_explicit_quoted_key) {
+          pos=value_position(line, 1, n)
+          while (pos <= n) {
+            c=substr(line, pos, 1)
+            if (c == "\\") {
+              escape=substr(line, pos + 1, 1)
+              if (escape == "u") {
+                explicit_quoted_key_token=explicit_quoted_key_token decode_ascii_hex(substr(line, pos + 2, 4), 4)
+                pos+=6
+                continue
+              }
+              if (escape == "x") {
+                explicit_quoted_key_token=explicit_quoted_key_token decode_ascii_hex(substr(line, pos + 2, 2), 2)
+                pos+=4
+                continue
+              }
+              if (escape == "U") {
+                explicit_quoted_key_token=explicit_quoted_key_token decode_ascii_hex(substr(line, pos + 2, 8), 8)
+                pos+=10
+                continue
+              }
+              if (pos < n) {
+                explicit_quoted_key_token=explicit_quoted_key_token escape
+                pos+=2
+                continue
+              }
+              pos=n + 1
+              break
+            }
+            if (c == "\"") {
+              in_explicit_quoted_key=0
+              pos++
+              break
+            }
+            explicit_quoted_key_token=explicit_quoted_key_token c
+            pos++
+          }
+          if (in_explicit_quoted_key) next
+          j=pos
+          while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+          if (explicit_quoted_key_token == "oauth_token" && substr(line, j, 1) == ":") {
+            if (value_present(line, j + 1, n)) {
+              found=1
+              next
+            }
+            pending_oauth_value=1
+            pending_oauth_indent=explicit_quoted_key_mapping_indent
+            pending_oauth_flow_value=flow_depth > 0
+            pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
+            pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, j + 1, n)
+            next
+          }
+          if (explicit_quoted_key_token == "oauth_token" && (j > n || substr(line, j, 1) == "#")) {
+            pending_explicit_oauth_key=1
+            pending_explicit_oauth_indent=explicit_quoted_key_mapping_indent
+          }
+          next
         }
         if (in_explicit_key_scalar) {
           if (line ~ /^[[:space:]]*$/) {
@@ -555,8 +626,9 @@ reject_plaintext_gh_credentials() {
             if (value_deferred(line, pos + 1, n)) {
               pending_oauth_value=1
               pending_oauth_indent=indent
+              pending_oauth_flow_value=flow_depth > 0
               pending_oauth_block_scalar=block_scalar_value(line, pos + 1, n)
-              pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_preserves_blank(line, pos + 1, n)
+              pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, pos + 1, n)
               next
             }
           }
@@ -578,7 +650,20 @@ reject_plaintext_gh_credentials() {
           c=substr(line, i, 1)
           if (c ~ /[[:space:]]/) { i++; continue }
           if (c == "#") break
-          if (c == "{" || c == ",") { previous=c; explicit_key=0; i++; continue }
+          if (c == "{" || c == ",") {
+            if (c == "{") flow_depth++
+            previous=c
+            explicit_key=0
+            i++
+            continue
+          }
+          if (c == "}") {
+            if (flow_depth > 0) flow_depth--
+            previous=c
+            explicit_key=0
+            i++
+            continue
+          }
           entry=(previous == "" || previous == "{" || previous == ",")
           if (entry && c == "?") {
             explicit_key=1
@@ -640,6 +725,13 @@ reject_plaintext_gh_credentials() {
                   continue
                 }
                 if (i < n) { token=token escape; i+=2; continue }
+                if (entry && explicit_key) {
+                  in_explicit_quoted_key=1
+                  explicit_quoted_key_token=token
+                  explicit_quoted_key_mapping_indent=explicit_key_indent
+                  i=n + 1
+                  break
+                }
               }
               if (c == quote) {
                 if (quote == sq && substr(line, i + 1, 1) == sq) {
@@ -653,6 +745,7 @@ reject_plaintext_gh_credentials() {
               token=token c
               i++
             }
+            if (in_explicit_quoted_key) break
             j=i
             while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
             if (entry && token == "oauth_token" && substr(line, j, 1) == ":") {
@@ -663,8 +756,9 @@ reject_plaintext_gh_credentials() {
               if (value_deferred(line, j + 1, n)) {
                 pending_oauth_value=1
                 pending_oauth_indent=indent
+                pending_oauth_flow_value=flow_depth > 0
                 pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
-                pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_preserves_blank(line, j + 1, n)
+                pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, j + 1, n)
                 break
               }
             }
@@ -700,8 +794,9 @@ reject_plaintext_gh_credentials() {
               if (value_deferred(line, j + 1, n)) {
                 pending_oauth_value=1
                 pending_oauth_indent=indent
+                pending_oauth_flow_value=flow_depth > 0
                 pending_oauth_block_scalar=block_scalar_value(line, j + 1, n)
-                pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_preserves_blank(line, j + 1, n)
+                pending_oauth_block_preserves_blank=pending_oauth_block_scalar && block_scalar_keeps_blank(line, j + 1, n)
                 break
               }
             }
