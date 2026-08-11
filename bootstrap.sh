@@ -68,11 +68,11 @@ sensitive_argv_value() {
   local value="$1"
   local lower="${value,,}"
   [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]] && return 0
+  [[ "$value" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/@]+@ ]] && return 0
   is_contract_status "$value" && return 1
   if [[ "$value" =~ ^([^=[:space:]]+)=(.*)$ ]] && sensitive_argv_key "${BASH_REMATCH[1]}"; then
     return 0
   fi
-  [[ "$value" =~ [A-Za-z][A-Za-z0-9+.-]*://[^/@[:space:]]+@ ]] && return 0
   [[ "$value" =~ (^|[^A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{8,}($|[^A-Za-z0-9_]) ]] && return 0
   [[ "$value" =~ (^|[^A-Za-z0-9_])github_pat_[A-Za-z0-9_]{8,}($|[^A-Za-z0-9_]) ]] && return 0
   [[ "$value" =~ (^|[^A-Za-z0-9-])xox[a-z]-[A-Za-z0-9-]{8,}($|[^A-Za-z0-9-]) ]] && return 0
@@ -375,8 +375,182 @@ install_gh() {
 
 reject_plaintext_gh_credentials() {
   local config_file="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
-  if [[ -f "$config_file" ]] && grep -Eiq "(^|[^[:alnum:]_])[\"']?oauth_token[\"']?[[:space:]]*:" "$config_file"; then
-    log_error "GitHub CLI has a plaintext token key in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying."
+  if [[ -f "$config_file" ]] && awk '
+      function value_position(line, pos, n) {
+        while (pos <= n && substr(line, pos, 1) ~ /[[:space:]]/) pos++
+        return pos
+      }
+      function value_present(line, pos, n, c) {
+        pos=value_position(line, pos, n)
+        if (pos > n) return 0
+        c=substr(line, pos, 1)
+        return c != "}" && c != "," && c != "#"
+      }
+      function value_deferred(line, pos, n, c) {
+        pos=value_position(line, pos, n)
+        return pos > n || substr(line, pos, 1) == "#"
+      }
+      function block_scalar_value(line, pos, n, c) {
+        pos=value_position(line, pos, n)
+        c=substr(line, pos, 1)
+        if (c != "|" && c != ">") return 0
+        pos++
+        while (pos <= n && substr(line, pos, 1) ~ /[1-9+-]/) pos++
+        pos=value_position(line, pos, n)
+        return pos > n || substr(line, pos, 1) == "#"
+      }
+      function hex_digit(c, p) {
+        p=index("0123456789abcdef", tolower(c))
+        return p ? p - 1 : -1
+      }
+      function decode_ascii_hex(value, width, i, digit, number) {
+        if (length(value) != width) return invalid_escape
+        number=0
+        for (i=1; i<=width; i++) {
+          digit=hex_digit(substr(value, i, 1))
+          if (digit < 0) return invalid_escape
+          number=number * 16 + digit
+        }
+        return number <= 127 ? sprintf("%c", number) : invalid_escape
+      }
+      function leading_spaces(line, i) {
+        i=1
+        while (substr(line, i, 1) == " ") i++
+        return i - 1
+      }
+      BEGIN {
+        sq=sprintf("%c", 39)
+        invalid_escape=sprintf("%c", 1)
+        in_block_scalar=0
+        block_indent=-1
+        pending_oauth_value=0
+        pending_oauth_indent=-1
+      }
+      {
+        line=$0
+        n=length(line)
+        indent=leading_spaces(line)
+        if (pending_oauth_value) {
+          if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) next
+          if (indent > pending_oauth_indent) {
+            found=1
+            next
+          }
+          pending_oauth_value=0
+        }
+        if (in_block_scalar) {
+          if (line ~ /^[[:space:]]*$/) next
+          if (indent > block_indent) next
+          in_block_scalar=0
+        }
+        i=1
+        previous=""
+        while (i <= n) {
+          c=substr(line, i, 1)
+          if (c ~ /[[:space:]]/) { i++; continue }
+          if (c == "#") break
+          if (c == "{" || c == ",") { previous=c; i++; continue }
+          entry=(previous == "" || previous == "{" || previous == ",")
+          token=""
+          if (c == "\"" || c == sq) {
+            quote=c
+            i++
+            while (i <= n) {
+              c=substr(line, i, 1)
+              if (quote == "\"" && c == "\\") {
+                escape=substr(line, i + 1, 1)
+                if (escape == "u") {
+                  token=token decode_ascii_hex(substr(line, i + 2, 4), 4)
+                  i+=6
+                  continue
+                }
+                if (escape == "x") {
+                  token=token decode_ascii_hex(substr(line, i + 2, 2), 2)
+                  i+=4
+                  continue
+                }
+                if (escape == "U") {
+                  token=token decode_ascii_hex(substr(line, i + 2, 8), 8)
+                  i+=10
+                  continue
+                }
+                if (i < n) { token=token escape; i+=2; continue }
+              }
+              if (c == quote) {
+                if (quote == sq && substr(line, i + 1, 1) == sq) {
+                  token=token sq
+                  i+=2
+                  continue
+                }
+                i++
+                break
+              }
+              token=token c
+              i++
+            }
+            j=i
+            while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+            if (entry && token == "oauth_token" && substr(line, j, 1) == ":") {
+              if (value_present(line, j + 1, n)) {
+                found=1
+                break
+              }
+              if (value_deferred(line, j + 1, n)) {
+                pending_oauth_value=1
+                pending_oauth_indent=indent
+                break
+              }
+            }
+            if (substr(line, j, 1) == ":") {
+              if (block_scalar_value(line, j + 1, n)) {
+                in_block_scalar=1
+                block_indent=indent
+                break
+              }
+              previous=":"
+              i=j + 1
+            } else {
+              i=j
+            }
+            continue
+          }
+          if (entry && c ~ /[A-Za-z0-9_.-]/) {
+            start=i
+            while (i <= n && substr(line, i, 1) ~ /[A-Za-z0-9_.-]/) i++
+            token=substr(line, start, i - start)
+            j=i
+            while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+            if (token == "oauth_token" && substr(line, j, 1) == ":") {
+              if (value_present(line, j + 1, n)) {
+                found=1
+                break
+              }
+              if (value_deferred(line, j + 1, n)) {
+                pending_oauth_value=1
+                pending_oauth_indent=indent
+                break
+              }
+            }
+            if (substr(line, j, 1) == ":") {
+              if (block_scalar_value(line, j + 1, n)) {
+                in_block_scalar=1
+                block_indent=indent
+                break
+              }
+              previous=":"
+              i=j + 1
+            } else {
+              previous="x"
+              i=j
+            }
+            continue
+          }
+          i++
+        }
+      }
+      END { exit(found ? 0 : 1) }
+    ' "$config_file"; then
+    log_error "GitHub CLI has a plaintext token in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying."
     return 1
   fi
 }
@@ -490,7 +664,9 @@ if [[ -d "$dest_path/.git" ]]; then
   if git -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
     git -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
   else
-    git -C "$dest_path" checkout --no-overwrite-ignore --track -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH" --quiet
+    git -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
+    git -C "$dest_path" config "branch.$TARGET_BRANCH.remote" origin
+    git -C "$dest_path" config "branch.$TARGET_BRANCH.merge" "refs/heads/$TARGET_BRANCH"
   fi
   local_head="$(git -C "$dest_path" rev-parse HEAD)"
   if [[ "$local_head" != "$remote_head" ]]; then
@@ -506,7 +682,7 @@ if [[ -d "$dest_path/.git" ]]; then
     exit 1
   }
   if [[ -n "$(git -C "$dest_path" status --porcelain --untracked-files=all)" ]]; then
-    log_error "Existing clone became non-clean during branch synchronization; refusing canonical readback."
+    log_error "Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback."
     exit 1
   fi
 else
