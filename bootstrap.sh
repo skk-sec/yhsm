@@ -14,6 +14,25 @@ DRY_RUN=0
 ISSUE_SMOKE_TEST=0
 SMOKE_ISSUE_REPO=""
 SMOKE_ISSUE_NUMBER=""
+SESSION_AUTH_ACTIVE=0
+SESSION_ROOT=""
+SESSION_PARENT=""
+SESSION_GIT_SETUP=0
+CLEANUP_ACTIVE=0
+ORIGINAL_HOME=""
+ORIGINAL_XDG_CONFIG_HOME_SET=0
+ORIGINAL_XDG_CONFIG_HOME=""
+ORIGINAL_GH_CONFIG_DIR_SET=0
+ORIGINAL_GH_CONFIG_DIR=""
+NORMAL_GH_CONFIG_FILE=""
+NORMAL_GH_CONFIG_EXISTED=0
+NORMAL_GH_CONFIG_SHA256=""
+NORMAL_GIT_CONFIG_FILE=""
+NORMAL_GIT_CONFIG_EXISTED=0
+NORMAL_GIT_CONFIG_SHA256=""
+NORMAL_XDG_GIT_CONFIG_FILE=""
+NORMAL_XDG_GIT_CONFIG_EXISTED=0
+NORMAL_XDG_GIT_CONFIG_SHA256=""
 
 sensitive_argv_key() {
   local key="$1"
@@ -168,8 +187,6 @@ print_argv_banner() {
         masked+=("$arg")
         ;;
       *)
-        # Unknown operands have not passed option validation yet. Never copy
-        # them verbatim into the startup banner.
         masked+=("***")
         ;;
     esac
@@ -187,13 +204,15 @@ usage() {
 Customer YubiHSM Stage-0 Bootstrap
 
 Usage:
+  bash ./bootstrap.sh <owner/repo> [options]
   bash ./bootstrap.sh --target-repo <owner/repo> [options]
 
 Examples:
+  bash ./bootstrap.sh example-org/pilot-repository
   bash ./bootstrap.sh --private-target --target-repo example-org/pilot-repository
 
 Options:
-  --target-repo <owner/repo>   Required customer repository cloned after bootstrap.
+  --target-repo <owner/repo>   Explicit repository cloned after bootstrap.
   --target-branch <branch>     Branch to clone. Default: main
   --workdir <path>             Parent directory for the clone. Default: ~/git
   --private-target             Private target: install/authenticate gh. Default.
@@ -207,12 +226,12 @@ Stage-0 scope:
   - Debian/Ubuntu apt-based hosts only.
   - Installs baseline repository-access tools only.
   - For private targets installs GitHub CLI from the official signed Debian repository.
-  - Requires a working system credential store and refuses gh plaintext token storage.
+  - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
   - Uses GitHub device/web authentication; token-bearing GitHub auth environment variables are rejected.
   - Verifies private repository and issue read access, clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
   - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
-  - The public Stage-0 repository contains no implicit private customer default; the customer channel is always explicit.
+  - The repository is always explicit; no private repository is selected implicitly.
 USAGE
 }
 
@@ -222,6 +241,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --target-repo)
       [[ $# -ge 2 && "${2:-}" != -* ]] || { log_error "--target-repo requires a repository operand."; exit 2; }
+      [[ -z "$TARGET_REPO" ]] || { log_error "Target repository may be specified only once."; exit 2; }
       TARGET_REPO="$2"
       shift 2
       ;;
@@ -255,16 +275,26 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    *)
+    --*)
       log_error "Unknown option (value redacted)."
       usage >&2
       exit 2
+      ;;
+    *)
+      if [[ -z "$TARGET_REPO" ]]; then
+        TARGET_REPO="$1"
+        shift
+      else
+        log_error "Unknown option (value redacted)."
+        usage >&2
+        exit 2
+      fi
       ;;
   esac
 done
 
 [[ -n "$TARGET_REPO" ]] || {
-  log_error "--target-repo is required; use the customer-specific private channel provided by the operator."
+  log_error "An explicit repository is required; pass owner/repository or --target-repo owner/repository."
   exit 2
 }
 [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log_error "Invalid --target-repo."; exit 2; }
@@ -342,11 +372,169 @@ reject_git_repository_environment() {
 
 reject_git_repository_environment || exit 1
 
+canonical_directory() {
+  local path="$1"
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  (cd -P -- "$path" 2>/dev/null && pwd -P)
+}
+
+read_single_path_record() {
+  local path="$1"
+  local -a records=()
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  mapfile -t records <"$path" || return 1
+  [[ "${#records[@]}" -eq 1 && -n "${records[0]}" ]] || return 1
+  printf '%s\n' "${records[0]}"
+}
+
+resolve_direct_git_config_paths() {
+  local repo_path="$1" marker git_dir_record git_dir common_dir_record common_dir
+  marker="$repo_path/.git"
+  if [[ -d "$marker" && ! -L "$marker" ]]; then
+    git_dir="$(canonical_directory "$marker")" || return 1
+  elif [[ -f "$marker" && ! -L "$marker" ]]; then
+    git_dir_record="$(read_single_path_record "$marker")" || return 1
+    [[ "$git_dir_record" == 'gitdir: '* ]] || return 1
+    git_dir_record="${git_dir_record#gitdir: }"
+    [[ -n "$git_dir_record" && "$git_dir_record" != *$'\n'* ]] || return 1
+    if [[ "$git_dir_record" != /* ]]; then git_dir_record="$repo_path/$git_dir_record"; fi
+    git_dir="$(canonical_directory "$git_dir_record")" || return 1
+  else
+    return 1
+  fi
+
+  common_dir="$git_dir"
+  if [[ -e "$git_dir/commondir" ]]; then
+    common_dir_record="$(read_single_path_record "$git_dir/commondir")" || return 1
+    [[ -n "$common_dir_record" && "$common_dir_record" != *$'\n'* ]] || return 1
+    if [[ "$common_dir_record" != /* ]]; then common_dir_record="$git_dir/$common_dir_record"; fi
+    common_dir="$(canonical_directory "$common_dir_record")" || return 1
+  fi
+  [[ "$common_dir/config" != *$'\n'* && "$git_dir/config.worktree" != *$'\n'* ]] || return 1
+  printf '%s\n%s\n' "$common_dir/config" "$git_dir/config.worktree"
+}
+
+reject_direct_include_file() {
+  local config_path="$1" required="$2" records errors rc
+  if [[ ! -e "$config_path" && "$required" -eq 0 ]]; then return 0; fi
+  [[ -f "$config_path" && ! -L "$config_path" ]] || return 1
+  records="$(mktemp)" || return 1
+  errors="$(mktemp)" || { rm -f -- "$records"; return 1; }
+  if git config --file "$config_path" --no-includes --null --name-only --get-regexp '^(include\.path|includeif\..*\.path)$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    rm -f -- "$records" "$errors"
+    return 2
+  fi
+  if [[ "$rc" -ne 1 || -s "$records" || -s "$errors" ]]; then
+    rm -f -- "$records" "$errors"
+    return 1
+  fi
+  rm -f -- "$records" "$errors"
+}
+
+reject_direct_repo_includes() {
+  local repo_path="$1" worktree_enabled rc
+  local -a paths=()
+  mapfile -t paths < <(resolve_direct_git_config_paths "$repo_path") || return 1
+  [[ "${#paths[@]}" -eq 2 ]] || return 1
+  local config_path="${paths[0]}" worktree_config="${paths[1]}"
+
+  reject_direct_include_file "$config_path" 1
+  rc=$?
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  if worktree_enabled="$(git config --file "$config_path" --no-includes --type=bool --get extensions.worktreeConfig 2>/dev/null)"; then
+    [[ "$worktree_enabled" == true || "$worktree_enabled" == false ]] || return 1
+  else
+    rc=$?
+    [[ "$rc" -eq 1 ]] || return 1
+    worktree_enabled=false
+  fi
+  if [[ "$worktree_enabled" == true ]]; then
+    reject_direct_include_file "$worktree_config" 0 || return $?
+  fi
+}
+
+reject_direct_submodule_includes() {
+  local repo_path="$1" modules_file records errors rc entry submodule_path nested_repo repo_root nested_root
+  modules_file="$repo_path/.gitmodules"
+  [[ -e "$modules_file" ]] || return 0
+  [[ -f "$modules_file" && ! -L "$modules_file" ]] || return 1
+  records="$(mktemp)" || return 1
+  errors="$(mktemp)" || { rm -f -- "$records"; return 1; }
+  if git config --file "$modules_file" --no-includes --null --get-regexp '^submodule\..*\.path$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
+  if [[ "$rc" -ne 0 && ( "$rc" -ne 1 || -s "$records" || -s "$errors" ) ]]; then
+    rm -f -- "$records" "$errors"
+    return 1
+  fi
+  repo_root="$(canonical_directory "$repo_path")" || { rm -f -- "$records" "$errors"; return 1; }
+  if [[ "$rc" -eq 0 ]]; then
+    exec 3<"$records"
+    while IFS= read -r -d '' entry <&3; do
+      [[ "$entry" == *$'\n'* ]] || { exec 3<&-; rm -f -- "$records" "$errors"; return 1; }
+      submodule_path="${entry#*$'\n'}"
+      case "$submodule_path" in
+        ''|/*|..|../*|*/..|*/../*|*$'\n'*) exec 3<&-; rm -f -- "$records" "$errors"; return 1 ;;
+      esac
+      nested_repo="$repo_path/$submodule_path"
+      if [[ -L "$nested_repo" ]]; then
+        exec 3<&-
+        rm -f -- "$records" "$errors"
+        return 3
+      fi
+      [[ -e "$nested_repo/.git" ]] || continue
+      nested_root="$(canonical_directory "$nested_repo")" || { exec 3<&-; rm -f -- "$records" "$errors"; return 1; }
+      case "$nested_root/" in "$repo_root/"*) ;; *) exec 3<&-; rm -f -- "$records" "$errors"; return 1 ;; esac
+      reject_direct_repo_includes "$nested_root" || { rc=$?; exec 3<&-; rm -f -- "$records" "$errors"; return "$rc"; }
+      reject_direct_submodule_includes "$nested_root" || { rc=$?; exec 3<&-; rm -f -- "$records" "$errors"; return "$rc"; }
+    done
+    exec 3<&-
+  fi
+  rm -f -- "$records" "$errors"
+}
+
 reject_existing_clone_execution_config() {
-  local repo_path="$1" config_records config_errors config_rc scope entry submodule_output
+  local repo_path="$1" neutral_config config_records config_errors config_rc scope entry submodule_output direct_rc
+
+  neutral_config="$(mktemp)" || return 1
+  if git config --file "$neutral_config" --no-includes --show-scope --get-regexp '^$' >/dev/null 2>&1; then
+    rm -f -- "$neutral_config"
+    log_error "Unable to probe Git configuration capability safely; refusing Stage-0 onboarding."
+    return 1
+  else
+    config_rc=$?
+  fi
+  rm -f -- "$neutral_config"
+  if [[ "$config_rc" -ne 1 ]]; then
+    log_error "Git 2.26 or newer is required to inspect an existing clone safely; upgrade Git or use a fresh workdir."
+    return 1
+  fi
+
+  reject_direct_repo_includes "$repo_path"
+  direct_rc=$?
+  if [[ "$direct_rc" -ne 0 ]]; then
+    if [[ "$direct_rc" -eq 2 ]]; then
+      log_error "Existing clone has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust."
+    else
+      log_error "Unable to inspect Git include configuration directly; refusing Stage-0 onboarding."
+    fi
+    return 1
+  fi
+  reject_direct_submodule_includes "$repo_path"
+  direct_rc=$?
+  if [[ "$direct_rc" -ne 0 ]]; then
+    if [[ "$direct_rc" -eq 2 ]]; then
+      log_error "An initialized submodule has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust."
+    elif [[ "$direct_rc" -eq 3 ]]; then
+      log_error "A registered submodule root is a symbolic link; refusing repository-context submodule inspection before trust."
+    else
+      log_error "Unable to inspect initialized-submodule Git include configuration directly; refusing Stage-0 onboarding."
+    fi
+    return 1
+  fi
+
   config_records="$(mktemp)"
   config_errors="$(mktemp)"
-  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
+  if git -C "$repo_path" config --null --show-scope --includes --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
     config_rc=0
   else
     config_rc=$?
@@ -393,7 +581,7 @@ reject_existing_clone_execution_config() {
       bash -c '\''
         records="$(mktemp)" || exit 93
         errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
-        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree|http\\..*|remote\\..*\\.(proxy|proxyAuthMethod))$" >"$records" 2>"$errors"; then
+        if git config --null --show-scope --includes --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree|http\\..*|remote\\..*\\.(proxy|proxyAuthMethod))$" >"$records" 2>"$errors"; then
           rc=0
         else
           rc=$?
@@ -482,9 +670,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log_info "(dry-run) install ca-certificates and git if missing"
   if [[ "$TARGET_VISIBILITY" == "private" ]]; then
     log_info "(dry-run) install GitHub CLI from the official signed Debian repository if missing"
-    log_info "(dry-run) require and verify a secure system credential store"
+    log_info "(dry-run) prefer and verify a secure system credential store; otherwise use verified RAM-backed session-only auth"
     log_info "(dry-run) authenticate with GitHub device/web flow if not already authenticated"
-    log_info "(dry-run) configure gh as the Git credential helper"
+    log_info "(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context"
     log_info "(dry-run) verify private repository and issue read access"
   fi
   log_info "(dry-run) clone exact branch '$TARGET_BRANCH' from $TARGET_REPO"
@@ -1179,18 +1367,14 @@ reject_plaintext_gh_credentials() {
 
 verify_secure_gh_credential_backend() {
   local probe_service probe_value='stage0-credential-backend-probe' probe_readback
-  command -v secret-tool >/dev/null 2>&1 || { log_error "Secure credential backend probe requires secret-tool."; return 1; }
+  command -v secret-tool >/dev/null 2>&1 || return 1
   probe_service="yhsm-stage0-probe-${EUID}-$$"
   if ! printf '%s' "$probe_value" | secret-tool store --label='YHSM Stage-0 credential-backend probe' service "$probe_service" account probe >/dev/null 2>&1; then
-    log_error "No usable system credential store is available; GitHub authentication is blocked to prevent plaintext-token fallback."
     return 1
   fi
   probe_readback="$(secret-tool lookup service "$probe_service" account probe 2>/dev/null || true)"
   secret-tool clear service "$probe_service" account probe >/dev/null 2>&1 || true
-  [[ "$probe_readback" == "$probe_value" ]] || {
-    log_error "System credential store failed its write/read/clear probe; GitHub authentication is blocked."
-    return 1
-  }
+  [[ "$probe_readback" == "$probe_value" ]] || return 1
   log_ok "Secure GitHub credential-backend contract verified."
 }
 
@@ -1232,19 +1416,227 @@ run_gh_device_login_fail_closed() {
   rm -rf -- "$snapshot_dir"
 }
 
+capture_file_state() {
+  local path="$1" existed_name="$2" hash_name="$3" hash_value=""
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    printf -v "$existed_name" '%s' 1
+    hash_value="$(sha256sum -- "$path" | awk '{print $1}')" || return 1
+    printf -v "$hash_name" '%s' "$hash_value"
+  elif [[ -e "$path" || -L "$path" ]]; then
+    return 1
+  else
+    printf -v "$existed_name" '%s' 0
+    printf -v "$hash_name" '%s' ''
+  fi
+}
+
+verify_file_state_unchanged() {
+  local path="$1" existed="$2" expected_hash="$3" actual_hash
+  if [[ "$existed" -eq 1 ]]; then
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    actual_hash="$(sha256sum -- "$path" | awk '{print $1}')" || return 1
+    [[ "$actual_hash" == "$expected_hash" ]]
+  else
+    [[ ! -e "$path" && ! -L "$path" ]]
+  fi
+}
+
+capture_normal_auth_state() {
+  ORIGINAL_HOME="$HOME"
+  if [[ -v XDG_CONFIG_HOME ]]; then
+    ORIGINAL_XDG_CONFIG_HOME_SET=1
+    ORIGINAL_XDG_CONFIG_HOME="$XDG_CONFIG_HOME"
+  else
+    ORIGINAL_XDG_CONFIG_HOME_SET=0
+    ORIGINAL_XDG_CONFIG_HOME=""
+  fi
+  if [[ -v GH_CONFIG_DIR ]]; then
+    ORIGINAL_GH_CONFIG_DIR_SET=1
+    ORIGINAL_GH_CONFIG_DIR="$GH_CONFIG_DIR"
+  else
+    ORIGINAL_GH_CONFIG_DIR_SET=0
+    ORIGINAL_GH_CONFIG_DIR=""
+  fi
+  NORMAL_GH_CONFIG_FILE="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
+  NORMAL_GIT_CONFIG_FILE="$HOME/.gitconfig"
+  NORMAL_XDG_GIT_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
+  capture_file_state "$NORMAL_GH_CONFIG_FILE" NORMAL_GH_CONFIG_EXISTED NORMAL_GH_CONFIG_SHA256 || return 1
+  capture_file_state "$NORMAL_GIT_CONFIG_FILE" NORMAL_GIT_CONFIG_EXISTED NORMAL_GIT_CONFIG_SHA256 || return 1
+  if [[ "$NORMAL_XDG_GIT_CONFIG_FILE" != "$NORMAL_GIT_CONFIG_FILE" ]]; then
+    capture_file_state "$NORMAL_XDG_GIT_CONFIG_FILE" NORMAL_XDG_GIT_CONFIG_EXISTED NORMAL_XDG_GIT_CONFIG_SHA256 || return 1
+  fi
+}
+
+verify_normal_auth_state_unchanged() {
+  verify_file_state_unchanged "$NORMAL_GH_CONFIG_FILE" "$NORMAL_GH_CONFIG_EXISTED" "$NORMAL_GH_CONFIG_SHA256" || return 1
+  verify_file_state_unchanged "$NORMAL_GIT_CONFIG_FILE" "$NORMAL_GIT_CONFIG_EXISTED" "$NORMAL_GIT_CONFIG_SHA256" || return 1
+  if [[ "$NORMAL_XDG_GIT_CONFIG_FILE" != "$NORMAL_GIT_CONFIG_FILE" ]]; then
+    verify_file_state_unchanged "$NORMAL_XDG_GIT_CONFIG_FILE" "$NORMAL_XDG_GIT_CONFIG_EXISTED" "$NORMAL_XDG_GIT_CONFIG_SHA256" || return 1
+  fi
+}
+
+safe_tmpfs_parent() {
+  local run_user="/run/user/$EUID"
+  if [[ -d "$run_user" && ! -L "$run_user" ]] &&
+     [[ "$(stat -c '%u' -- "$run_user" 2>/dev/null || true)" == "$EUID" ]] &&
+     [[ "$(stat -f -c '%T' -- "$run_user" 2>/dev/null || true)" == "tmpfs" ]]; then
+    printf '%s\n' "$run_user"
+    return 0
+  fi
+  if [[ -d /dev/shm && ! -L /dev/shm ]] &&
+     [[ "$(stat -f -c '%T' -- /dev/shm 2>/dev/null || true)" == "tmpfs" ]]; then
+    printf '%s\n' /dev/shm
+    return 0
+  fi
+  return 1
+}
+
+start_session_auth() {
+  local mode
+  capture_normal_auth_state || { log_error "Unable to snapshot normal GitHub/Git configuration before session-only authentication."; return 1; }
+  SESSION_PARENT="$(safe_tmpfs_parent)" || {
+    log_error "No verified tmpfs is available for session-only GitHub authentication; refusing plaintext fallback."
+    return 1
+  }
+  SESSION_ROOT="$(mktemp -d "$SESSION_PARENT/yhsm-stage0-session.XXXXXX")" || return 1
+  chmod 0700 "$SESSION_ROOT" || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  [[ ! -L "$SESSION_ROOT" && "$(stat -c '%u' -- "$SESSION_ROOT")" == "$EUID" ]] || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  mode="$(stat -c '%a' -- "$SESSION_ROOT")" || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  [[ "$mode" == "700" ]] || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  mkdir -p "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
+  chmod 0700 "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
+  export HOME="$SESSION_ROOT/home"
+  export XDG_CONFIG_HOME="$SESSION_ROOT/xdg"
+  export GH_CONFIG_DIR="$SESSION_ROOT/gh"
+  SESSION_AUTH_ACTIVE=1
+  log_info "Secure OS credential store unavailable; using verified RAM-backed session-only GitHub authentication."
+}
+
+restore_original_auth_environment() {
+  export HOME="$ORIGINAL_HOME"
+  if [[ "$ORIGINAL_XDG_CONFIG_HOME_SET" -eq 1 ]]; then
+    export XDG_CONFIG_HOME="$ORIGINAL_XDG_CONFIG_HOME"
+  else
+    unset XDG_CONFIG_HOME
+  fi
+  if [[ "$ORIGINAL_GH_CONFIG_DIR_SET" -eq 1 ]]; then
+    export GH_CONFIG_DIR="$ORIGINAL_GH_CONFIG_DIR"
+  else
+    unset GH_CONFIG_DIR
+  fi
+}
+
+cleanup_issue_smoke_test() {
+  if [[ -z "$SMOKE_ISSUE_REPO" || -z "$SMOKE_ISSUE_NUMBER" ]]; then return 0; fi
+  gh issue close "$SMOKE_ISSUE_NUMBER" --repo "$SMOKE_ISSUE_REPO" --comment 'Stage-0 cleanup closed the temporary smoke-test issue after an interrupted verification.' >/dev/null 2>&1 || true
+  SMOKE_ISSUE_REPO=""
+  SMOKE_ISSUE_NUMBER=""
+}
+
+cleanup_session_auth_best_effort() {
+  local root="$SESSION_ROOT"
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
+  restore_original_auth_environment || true
+  SESSION_AUTH_ACTIVE=0
+  SESSION_GIT_SETUP=0
+  SESSION_ROOT=""
+  SESSION_PARENT=""
+  if [[ -n "$root" ]]; then rm -rf -- "$root" >/dev/null 2>&1 || true; fi
+}
+
+cleanup_stage0() {
+  local rc=$?
+  if [[ "$CLEANUP_ACTIVE" -eq 1 ]]; then return "$rc"; fi
+  CLEANUP_ACTIVE=1
+  cleanup_issue_smoke_test || true
+  cleanup_session_auth_best_effort || true
+  CLEANUP_ACTIVE=0
+  return "$rc"
+}
+
+trap cleanup_stage0 EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+run_gh_session_login() {
+  local session_hosts mode
+  start_session_auth || return 1
+  log_info "Complete the one-time GitHub Device/Web flow shown by GitHub CLI."
+  if ! gh auth login --hostname github.com --git-protocol https --web --insecure-storage; then
+    log_error "GitHub session-only device/web authentication failed."
+    return 1
+  fi
+  session_hosts="$GH_CONFIG_DIR/hosts.yml"
+  case "$session_hosts/" in "$SESSION_ROOT/"*) ;; *) log_error "Session GitHub configuration escaped the RAM-backed session root."; return 1 ;; esac
+  [[ -f "$session_hosts" && ! -L "$session_hosts" ]] || { log_error "Session GitHub configuration was not created as a regular file."; return 1; }
+  [[ "$(stat -c '%u' -- "$session_hosts")" == "$EUID" ]] || { log_error "Session GitHub configuration has an unexpected owner."; return 1; }
+  mode="$(stat -c '%a' -- "$session_hosts")" || return 1
+  case "$mode" in 600|400) ;; *) log_error "Session GitHub configuration permissions are too broad."; return 1 ;; esac
+  grep -Eq '^[[:space:]]*oauth_token[[:space:]]*:' "$session_hosts" || { log_error "Session-only GitHub authentication did not produce the expected isolated credential record."; return 1; }
+  gh auth status --hostname github.com >/dev/null 2>&1 || { log_error "Session-only GitHub authentication could not be verified."; return 1; }
+  gh auth setup-git --hostname github.com
+  SESSION_GIT_SETUP=1
+  log_ok "Session-only GitHub authentication verified in RAM-backed storage."
+}
+
+verify_direct_repo_has_no_credential_helper() {
+  local repo_path="$1" config_path rc
+  local -a paths=()
+  mapfile -t paths < <(resolve_direct_git_config_paths "$repo_path") || return 1
+  [[ "${#paths[@]}" -eq 2 ]] || return 1
+  for config_path in "${paths[@]}"; do
+    [[ -e "$config_path" ]] || continue
+    if git config --file "$config_path" --no-includes --get-regexp '^credential(\..*)?\.helper$' >/dev/null 2>&1; then
+      return 1
+    else
+      rc=$?
+      [[ "$rc" -eq 1 ]] || return 1
+    fi
+  done
+}
+
+verify_session_postconditions() {
+  local repo_path="$1" current_remote
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
+  verify_normal_auth_state_unchanged || { log_error "Normal GitHub/Git configuration changed during session-only onboarding."; return 1; }
+  case "$HOME/" in "$SESSION_ROOT/"*) ;; *) log_error "Session HOME escaped the RAM-backed session root."; return 1 ;; esac
+  case "$XDG_CONFIG_HOME/" in "$SESSION_ROOT/"*) ;; *) log_error "Session XDG config escaped the RAM-backed session root."; return 1 ;; esac
+  case "$GH_CONFIG_DIR/" in "$SESSION_ROOT/"*) ;; *) log_error "Session GitHub config escaped the RAM-backed session root."; return 1 ;; esac
+  verify_direct_repo_has_no_credential_helper "$repo_path" || { log_error "Clone retained a repository-local credential helper after session-only onboarding."; return 1; }
+  current_remote="$(git -C "$repo_path" remote get-url origin)" || return 1
+  [[ "$current_remote" != *'@'* && "$current_remote" != *'://'*':'*'@'* ]] || { log_error "Clone remote contains userinfo; refusing session cleanup readback."; return 1; }
+  log_ok "Session-only authentication postconditions verified."
+}
+
+finish_session_auth() {
+  local root="$SESSION_ROOT"
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
+  restore_original_auth_environment || return 1
+  SESSION_AUTH_ACTIVE=0
+  SESSION_GIT_SETUP=0
+  SESSION_ROOT=""
+  SESSION_PARENT=""
+  rm -rf -- "$root" || return 1
+  [[ ! -e "$root" && ! -L "$root" ]] || return 1
+  log_ok "Session-only GitHub authentication state removed."
+}
+
 if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   install_gh
-  verify_secure_gh_credential_backend
   reject_plaintext_gh_credentials
-  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
-    log_info "GitHub authentication required for the private customer repository."
+  if gh auth status --hostname github.com >/dev/null 2>&1; then
+    log_ok "GitHub authentication already present."
+    gh auth setup-git --hostname github.com
+  elif verify_secure_gh_credential_backend; then
+    log_info "GitHub authentication required for the private repository."
     log_info "Complete the one-time device/web flow shown by GitHub CLI."
     run_gh_device_login_fail_closed
+    reject_plaintext_gh_credentials
+    gh auth setup-git --hostname github.com
   else
-    log_ok "GitHub authentication already present."
+    run_gh_session_login
   fi
-  reject_plaintext_gh_credentials
-  gh auth setup-git --hostname github.com
   gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null || {
     log_error "Authenticated GitHub account cannot access the target repository."; exit 1
   }
@@ -1305,19 +1697,19 @@ validate_initialized_submodules() {
 }
 
 mkdir -p "$WORKDIR"
-if [[ -e "$dest_path" && ! -d "$dest_path/.git" ]]; then
+if [[ -e "$dest_path" && ! -e "$dest_path/.git" ]]; then
   log_error "Clone destination exists but is not a Git repository."; exit 1
 fi
 
 remote_ref="refs/remotes/origin/$TARGET_BRANCH"
 
-if [[ -d "$dest_path/.git" ]]; then
+if [[ -e "$dest_path/.git" ]]; then
+  reject_existing_clone_execution_config "$dest_path" || exit 1
   actual_remote="$(git -C "$dest_path" remote get-url origin 2>/dev/null || true)"
   case "$actual_remote" in
     "$clone_url"|"https://github.com/$TARGET_REPO") ;;
     *) log_error "Existing clone has an unexpected origin remote."; exit 1 ;;
   esac
-  reject_existing_clone_execution_config "$dest_path" || exit 1
   if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
     log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
     exit 1
@@ -1340,7 +1732,7 @@ if [[ -d "$dest_path/.git" ]]; then
   fi
   validate_initialized_submodules "$dest_path" || exit 1
   log_info "Existing clean clone found; fetching exact remote branch."
-  git -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
+  git -c core.hooksPath=/dev/null -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
   remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
   ignored_collision=0
   while IFS= read -r -d '' ignored_path; do
@@ -1461,11 +1853,6 @@ printf 'path=%s\n' "$dest_path"
 
 if [[ -f "$dest_path/client/README.md" ]]; then log_ok "Customer client package found."; else log_warn "Target repository has no client/README.md; verify the selected channel."; fi
 
-cleanup_issue_smoke_test() {
-  if [[ -z "$SMOKE_ISSUE_REPO" || -z "$SMOKE_ISSUE_NUMBER" ]]; then return 0; fi
-  gh issue close "$SMOKE_ISSUE_NUMBER" --repo "$SMOKE_ISSUE_REPO" --comment 'Stage-0 cleanup closed the temporary smoke-test issue after an interrupted verification.' >/dev/null 2>&1 || true
-}
-
 run_issue_smoke_test() {
   local issue_url issue_number
   log_info "Creating sanitized temporary support-channel smoke-test issue."
@@ -1474,18 +1861,21 @@ run_issue_smoke_test() {
   [[ "$issue_number" =~ ^[0-9]+$ ]] || { log_error "Issue smoke test created an unparseable issue reference."; return 1; }
   SMOKE_ISSUE_REPO="$TARGET_REPO"
   SMOKE_ISSUE_NUMBER="$issue_number"
-  trap cleanup_issue_smoke_test EXIT
   log_info "IssueSmokeTestIssue=$issue_number"
   gh issue comment "$issue_number" --repo "$TARGET_REPO" --body 'Stage-0 issue comment path verified.' >/dev/null
   gh issue view "$issue_number" --repo "$TARGET_REPO" --json number,state,title >/dev/null
   gh issue close "$issue_number" --repo "$TARGET_REPO" --comment 'Stage-0 issue-channel smoke test completed successfully; no product incident.' >/dev/null
   SMOKE_ISSUE_REPO=""
   SMOKE_ISSUE_NUMBER=""
-  trap - EXIT
   log_ok "IssueSmokeTest=PASS issue=$issue_number"
 }
 
 if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
 
-log_info "Next: read the cloned customer documentation and follow only documented preflight/install steps."
+if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
+  verify_session_postconditions "$dest_path" || exit 1
+  finish_session_auth || { log_error "Unable to remove session-only GitHub authentication state."; exit 1; }
+fi
+
+log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
 log_ok "Stage-0 onboarding complete."
