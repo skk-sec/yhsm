@@ -68,7 +68,7 @@ sensitive_argv_value() {
   local value="$1"
   local lower="${value,,}"
   [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]] && return 0
-  [[ "$value" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/@]+@ ]] && return 0
+  [[ "$value" =~ ^[[:space:]]*[A-Za-z][A-Za-z0-9+.-]*://[^/@]+@ ]] && return 0
   is_contract_status "$value" && return 1
   if [[ "$value" =~ ^([^=[:space:]]+)=(.*)$ ]] && sensitive_argv_key "${BASH_REMATCH[1]}"; then
     return 0
@@ -425,6 +425,8 @@ reject_plaintext_gh_credentials() {
         block_indent=-1
         pending_oauth_value=0
         pending_oauth_indent=-1
+        pending_explicit_oauth_key=0
+        pending_explicit_oauth_indent=-1
       }
       {
         line=$0
@@ -443,14 +445,36 @@ reject_plaintext_gh_credentials() {
           if (indent > block_indent) next
           in_block_scalar=0
         }
+        if (pending_explicit_oauth_key) {
+          if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) next
+          pos=value_position(line, 1, n)
+          if (indent == pending_explicit_oauth_indent && substr(line, pos, 1) == ":") {
+            if (value_present(line, pos + 1, n)) {
+              found=1
+              next
+            }
+            if (value_deferred(line, pos + 1, n)) {
+              pending_oauth_value=1
+              pending_oauth_indent=indent
+              next
+            }
+          }
+          pending_explicit_oauth_key=0
+        }
         i=1
         previous=""
+        explicit_key=0
         while (i <= n) {
           c=substr(line, i, 1)
           if (c ~ /[[:space:]]/) { i++; continue }
           if (c == "#") break
-          if (c == "{" || c == ",") { previous=c; i++; continue }
+          if (c == "{" || c == ",") { previous=c; explicit_key=0; i++; continue }
           entry=(previous == "" || previous == "{" || previous == ",")
+          if (entry && c == "?") {
+            explicit_key=1
+            i++
+            continue
+          }
           token=""
           if (c == "\"" || c == sq) {
             quote=c
@@ -501,6 +525,11 @@ reject_plaintext_gh_credentials() {
                 break
               }
             }
+            if (entry && explicit_key && token == "oauth_token" && (j > n || substr(line, j, 1) == "#")) {
+              pending_explicit_oauth_key=1
+              pending_explicit_oauth_indent=indent
+              break
+            }
             if (substr(line, j, 1) == ":") {
               if (block_scalar_value(line, j + 1, n)) {
                 in_block_scalar=1
@@ -530,6 +559,11 @@ reject_plaintext_gh_credentials() {
                 pending_oauth_indent=indent
                 break
               }
+            }
+            if (entry && explicit_key && token == "oauth_token" && (j > n || substr(line, j, 1) == "#")) {
+              pending_explicit_oauth_key=1
+              pending_explicit_oauth_indent=indent
+              break
             }
             if (substr(line, j, 1) == ":") {
               if (block_scalar_value(line, j + 1, n)) {
@@ -637,6 +671,8 @@ if [[ -e "$dest_path" && ! -d "$dest_path/.git" ]]; then
   log_error "Clone destination exists but is not a Git repository."; exit 1
 fi
 
+remote_ref="refs/remotes/origin/$TARGET_BRANCH"
+
 if [[ -d "$dest_path/.git" ]]; then
   actual_remote="$(git -C "$dest_path" config --get remote.origin.url 2>/dev/null || true)"
   case "$actual_remote" in
@@ -649,7 +685,7 @@ if [[ -d "$dest_path/.git" ]]; then
   fi
   log_info "Existing clean clone found; fetching exact remote branch."
   git -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
-  remote_head="$(git -C "$dest_path" rev-parse "origin/$TARGET_BRANCH")"
+  remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
   ignored_collision=0
   while IFS= read -r -d '' ignored_path; do
     if git -C "$dest_path" cat-file -e "$remote_head:$ignored_path" 2>/dev/null; then
@@ -677,7 +713,7 @@ if [[ -d "$dest_path/.git" ]]; then
       exit 1
     fi
   fi
-  [[ "$(git -C "$dest_path" rev-parse HEAD)" == "$(git -C "$dest_path" rev-parse "origin/$TARGET_BRANCH")" ]] || {
+  [[ "$(git -C "$dest_path" rev-parse HEAD)" == "$(git -C "$dest_path" rev-parse "$remote_ref")" ]] || {
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
@@ -690,8 +726,21 @@ else
   git clone --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"
 fi
 
+git -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
+  log_error "Clone did not produce the requested remote branch; tags cannot satisfy --target-branch."
+  exit 1
+}
 repo_head="$(git -C "$dest_path" rev-parse HEAD)"
 repo_branch="$(git -C "$dest_path" branch --show-current)"
+remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
+[[ "$repo_branch" == "$TARGET_BRANCH" ]] || {
+  log_error "Clone is not checked out on the requested branch."
+  exit 1
+}
+[[ "$repo_head" == "$remote_head" ]] || {
+  log_error "Clone head is not exact to the requested remote branch."
+  exit 1
+}
 repo_remote="$(git -C "$dest_path" config --get remote.origin.url)"
 
 printf '%s\n' '--- STAGE-0 READBACK ---'
