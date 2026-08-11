@@ -187,6 +187,7 @@ Stage-0 scope:
   - The public Stage-0 repository contains no implicit private customer default; the customer channel is always explicit.
 USAGE
 }
+
 print_argv_banner "$@"
 
 while [[ $# -gt 0 ]]; do
