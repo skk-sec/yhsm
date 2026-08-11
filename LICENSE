@@ -3,16 +3,18 @@ Copyright (c) 2026 blankbox GmbH. All rights reserved.
 
 This file governs only the public Stage-0 bootstrap material distributed from the public YHSM bootstrap repository during the pilot phase.
 
-Permission is granted to an authorized pilot customer to:
+Subject to prior authorization by blankbox GmbH for a specific pilot or evaluation, permission is granted to the authorized evaluator to:
 - view the Stage-0 material;
 - download the Stage-0 material; and
-- execute the Stage-0 material solely for the customer-specific YubiHSM onboarding, installation and evaluation purpose authorized by blankbox GmbH.
+- install and execute the Stage-0 material solely for that authorized pilot or evaluation.
 
 Except where mandatory law provides otherwise, permission is not granted to:
 - modify or create derivative works from the Stage-0 material;
 - redistribute, publish, mirror, sublicense, sell, rent, lease or otherwise provide the Stage-0 material to third parties;
-- commercially reuse the Stage-0 material outside the specifically authorized customer pilot; or
+- independently or generally reuse the Stage-0 material for commercial purposes outside the specifically authorized pilot or evaluation; or
 - use the Stage-0 material to provide a competing product, managed service, hosting service or service-bureau offering.
+
+Nothing in these terms is intended to restrict repository hosting, access-control, security, archival or other platform functionality that GitHub must provide under its own terms to operate the authorized repository. Such platform functionality does not grant a recipient any additional license right.
 
 No ownership or exclusive right is transferred. All rights not expressly granted remain reserved by blankbox GmbH.
 
