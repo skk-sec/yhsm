@@ -416,6 +416,25 @@ reject_plaintext_gh_credentials() {
         while (pos <= n && substr(line, pos, 1) ~ /[[:space:]]/) pos++
         return pos
       }
+      function value_node_position(line, pos, n, c, start, tag) {
+        value_node_explicit_string=0
+        pos=value_position(line, pos, n)
+        while (pos <= n && substr(line, pos, 1) == "!") {
+          start=pos
+          pos++
+          if (substr(line, pos, 1) == "<") {
+            pos++
+            while (pos <= n && substr(line, pos, 1) != ">") pos++
+            if (pos <= n) pos++
+          } else {
+            while (pos <= n && substr(line, pos, 1) !~ /[[:space:]{}\[\],]/) pos++
+          }
+          tag=substr(line, start, pos - start)
+          if (tag == "!!str" || tag == "!<tag:yaml.org,2002:str>") value_node_explicit_string=1
+          pos=value_position(line, pos, n)
+        }
+        return pos
+      }
       function empty_value_tail(line, pos, n, c) {
         if (pos > n) return 1
         c=substr(line, pos, 1)
@@ -427,14 +446,15 @@ reject_plaintext_gh_credentials() {
         }
         return c == "," || c == "}"
       }
-      function value_present(line, pos, n, c, j, word) {
-        pos=value_position(line, pos, n)
+      function value_present(line, pos, n, c, j, word, explicit_string) {
+        pos=value_node_position(line, pos, n)
+        explicit_string=value_node_explicit_string
         if (pos > n) return 0
         c=substr(line, pos, 1)
         if (c == "}" || c == "," || c == "#" || block_scalar_value(line, pos, n)) return 0
-        if (c == "~" && empty_value_tail(line, pos + 1, n)) return 0
+        if (!explicit_string && c == "~" && empty_value_tail(line, pos + 1, n)) return 0
         word=tolower(substr(line, pos, 4))
-        if (word == "null" && empty_value_tail(line, pos + 4, n)) return 0
+        if (!explicit_string && word == "null" && empty_value_tail(line, pos + 4, n)) return 0
         if ((c == "\"" || c == sq) && substr(line, pos + 1, 1) == c && empty_value_tail(line, pos + 2, n)) return 0
         if (c == "{" || c == "[") {
           j=value_position(line, pos + 1, n)
@@ -443,11 +463,11 @@ reject_plaintext_gh_credentials() {
         return 1
       }
       function value_deferred(line, pos, n, c) {
-        pos=value_position(line, pos, n)
+        pos=value_node_position(line, pos, n)
         return pos > n || substr(line, pos, 1) == "#" || block_scalar_value(line, pos, n)
       }
       function block_scalar_value(line, pos, n, c) {
-        pos=value_position(line, pos, n)
+        pos=value_node_position(line, pos, n)
         c=substr(line, pos, 1)
         if (c != "|" && c != ">") return 0
         pos++
@@ -456,7 +476,7 @@ reject_plaintext_gh_credentials() {
         return pos > n || substr(line, pos, 1) == "#"
       }
       function block_scalar_keeps_blank(line, pos, n, c) {
-        pos=value_position(line, pos, n) + 1
+        pos=value_node_position(line, pos, n) + 1
         while (pos <= n) {
           c=substr(line, pos, 1)
           if (c == "+") return 1
@@ -467,7 +487,7 @@ reject_plaintext_gh_credentials() {
         return 0
       }
       function empty_quoted_value_continues(line, pos, n) {
-        pos=value_position(line, pos, n)
+        pos=value_node_position(line, pos, n)
         return substr(line, pos, 1) == "\"" && substr(line, pos + 1, 1) == "\\" && pos + 1 == n
       }
       function hex_digit(c, p) {
@@ -724,6 +744,14 @@ reject_plaintext_gh_credentials() {
             } else {
               while (i <= n && substr(line, i, 1) !~ /[[:space:]{}\[\],]/) i++
             }
+            j=i
+            while (j <= n && substr(line, j, 1) ~ /[[:space:]]/) j++
+            if (explicit_key && (j > n || substr(line, j, 1) == "#")) {
+              pending_explicit_key_node=1
+              pending_explicit_key_indent=explicit_key_indent
+              break
+            }
+            i=j
             continue
           }
           if (entry && explicit_key && block_scalar_value(line, i, n)) {
@@ -1051,6 +1079,10 @@ remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
   exit 1
 }
 repo_remote="$(git -C "$dest_path" remote get-url origin)"
+case "$repo_remote" in
+  "$clone_url"|"https://github.com/$TARGET_REPO") ;;
+  *) log_error "Clone origin changed during checkout; refusing canonical onboarding readback."; exit 1 ;;
+esac
 
 printf '%s\n' '--- STAGE-0 READBACK ---'
 printf 'repository=%s\n' "$TARGET_REPO"
