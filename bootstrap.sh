@@ -346,7 +346,7 @@ reject_existing_clone_execution_config() {
   local repo_path="$1" config_records config_errors config_rc scope entry submodule_output
   config_records="$(mktemp)"
   config_errors="$(mktemp)"
-  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree)$' >"$config_records" 2>"$config_errors"; then
+  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
     config_rc=0
   else
     config_rc=$?
@@ -380,7 +380,7 @@ reject_existing_clone_execution_config() {
       if [[ "$scope" == 'local' || "$scope" == 'worktree' ]]; then
         exec 3<&-
         rm -f -- "$config_records" "$config_errors"
-        log_error "Existing clone has repository-local or worktree Git execution configuration (filter, credential helper, or worktree redirection); refusing to inspect, authenticate, or update it."
+        log_error "Existing clone has repository-local or worktree Git execution configuration or HTTP proxy/TLS override (filter, credential helper, worktree redirection, or transport override); refusing to inspect, authenticate, or update it."
         return 1
       fi
     done
@@ -393,7 +393,7 @@ reject_existing_clone_execution_config() {
       bash -c '\''
         records="$(mktemp)" || exit 93
         errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
-        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree)$" >"$records" 2>"$errors"; then
+        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree|http\\..*|remote\\..*\\.(proxy|proxyAuthMethod))$" >"$records" 2>"$errors"; then
           rc=0
         else
           rc=$?
@@ -440,7 +440,7 @@ reject_existing_clone_execution_config() {
     if [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED"* ]]; then
       log_error "Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding."
     elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG"* ]]; then
-      log_error "An initialized submodule has repository-local or worktree Git execution configuration; refusing parent worktree inspection or authenticated fetch."
+      log_error "An initialized submodule has repository-local or worktree Git execution configuration or HTTP transport override; refusing parent worktree inspection or authenticated fetch."
     else
       log_error "Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding."
     fi
