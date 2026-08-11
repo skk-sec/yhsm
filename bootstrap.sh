@@ -595,6 +595,10 @@ reject_plaintext_gh_credentials() {
         }
         return number <= 127 ? sprintf("%c", number) : invalid_escape
       }
+      function decode_simple_yaml_escape(c) {
+        if (c == "\"" || c == "/" || c == "\\") return c
+        return invalid_escape
+      }
       function leading_spaces(line, i) {
         i=1
         while (substr(line, i, 1) == " ") i++
@@ -714,7 +718,7 @@ reject_plaintext_gh_credentials() {
                 continue
               }
               if (pos < n) {
-                explicit_quoted_key_token=explicit_quoted_key_token escape
+                explicit_quoted_key_token=explicit_quoted_key_token decode_simple_yaml_escape(escape)
                 pos+=2
                 continue
               }
@@ -950,7 +954,7 @@ reject_plaintext_gh_credentials() {
                   i+=10
                   continue
                 }
-                if (i < n) { token=token escape; i+=2; continue }
+                if (i < n) { token=token decode_simple_yaml_escape(escape); i+=2; continue }
                 if (entry && explicit_key) {
                   in_explicit_quoted_key=1
                   explicit_quoted_key_token=token
@@ -1215,7 +1219,11 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
   fi
-  if [[ -n "$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
+  if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+    log_error "Unable to inspect existing clone cleanliness; refusing to modify or report it as canonical."
+    exit 1
+  fi
+  if [[ -n "$repository_status" ]]; then
     log_error "Existing clone is not clean; refusing to modify or report it as canonical."
     exit 1
   fi
@@ -1254,7 +1262,11 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
-  if [[ -n "$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
+  if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+    log_error "Unable to inspect clone cleanliness after branch synchronization; refusing canonical onboarding readback."
+    exit 1
+  fi
+  if [[ -n "$repository_status" ]]; then
     log_error "Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1272,7 +1284,11 @@ if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/
   log_error "Clone has Git replacement refs; refusing canonical onboarding readback."
   exit 1
 fi
-if [[ -n "$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
+if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+  log_error "Unable to inspect final clone cleanliness; refusing canonical onboarding readback."
+  exit 1
+fi
+if [[ -n "$repository_status" ]]; then
   log_error "Clone is dirty after checkout; refusing canonical onboarding readback."
   exit 1
 fi
