@@ -342,6 +342,36 @@ reject_git_repository_environment() {
 
 reject_git_repository_environment || exit 1
 
+reject_git_config_matches() {
+  local description="$1"
+  shift
+  local config_output config_rc
+  if config_output="$(git "$@" 2>&1)"; then
+    if [[ -n "$config_output" ]]; then
+      log_error "$description"
+      return 1
+    fi
+    return 0
+  else
+    config_rc=$?
+  fi
+  if [[ "$config_rc" -eq 1 && -z "$config_output" ]]; then
+    return 0
+  fi
+  log_error "Unable to inspect Git execution configuration; refusing Stage-0 onboarding."
+  return 1
+}
+
+reject_existing_clone_execution_config() {
+  local repo_path="$1"
+  reject_git_config_matches \
+    "Existing clone has executable Git filter configuration; refusing to inspect or update its worktree." \
+    -C "$repo_path" config --local --get-regexp '^filter\..*\.(clean|smudge|process)$' || return 1
+  reject_git_config_matches \
+    "Existing clone has a repository-local Git credential helper; refusing authenticated fetch." \
+    -C "$repo_path" config --local --get-all credential.helper
+}
+
 if [[ ! -r /etc/os-release ]]; then
   log_error "Unsupported host: /etc/os-release is missing."
   exit 1
@@ -1211,6 +1241,7 @@ if [[ -d "$dest_path/.git" ]]; then
     "$clone_url"|"https://github.com/$TARGET_REPO") ;;
     *) log_error "Existing clone has an unexpected origin remote."; exit 1 ;;
   esac
+  reject_existing_clone_execution_config "$dest_path" || exit 1
   if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
     log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
     exit 1
