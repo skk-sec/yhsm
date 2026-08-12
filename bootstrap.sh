@@ -36,6 +36,7 @@ ACTIVE_CHILD_PID=""
 PENDING_SIGNAL_STATUS=0
 PENDING_SIGNAL_NAME=""
 SIGNAL_DEFER_EXIT=0
+ACTIVE_CHILD_SIGNAL_DEFER=0
 
 sensitive_argv_key() {
   local key="$1"
@@ -1555,7 +1556,7 @@ forward_termination_signal() {
   PENDING_SIGNAL_STATUS="$signal_status"
 
   if [[ -n "$pid" ]]; then
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    if [[ "$pid" =~ ^[0-9]+$ && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
       kill -s "$signal_name" "$pid" 2>/dev/null || true
     fi
     return 0
@@ -1573,15 +1574,21 @@ run_interruptible_child() {
 
   ACTIVE_CHILD_PID="pending"
   (
-    # Non-job-control Bash gives asynchronous children an ignored SIGINT.
-    # Reset termination dispositions in the forked shell before exec.
-    trap - HUP INT TERM
+    if [[ "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 1 ]]; then
+      # Registration-critical children must also survive HUP/INT/TERM delivered
+      # directly to the foreground process group until cleanup registration.
+      trap '' HUP INT TERM
+    else
+      # Non-job-control Bash gives asynchronous children an ignored SIGINT.
+      # Reset termination dispositions in the forked shell before exec.
+      trap - HUP INT TERM
+    fi
     exec "$@"
   ) &
   child_pid=$!
   ACTIVE_CHILD_PID="$child_pid"
 
-  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
     kill -s "${PENDING_SIGNAL_NAME:-TERM}" "$child_pid" 2>/dev/null || true
   fi
 
@@ -1594,7 +1601,7 @@ run_interruptible_child() {
     fi
 
     if kill -0 "$child_pid" 2>/dev/null; then
-      if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+      if [[ "$PENDING_SIGNAL_STATUS" -ne 0 && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
         kill -s "${PENDING_SIGNAL_NAME:-TERM}" "$child_pid" 2>/dev/null || true
       fi
       continue
@@ -1647,10 +1654,15 @@ cleanup_session_auth_best_effort() {
   local root="$SESSION_ROOT"
   [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
   restore_original_auth_environment || true
+
+  if [[ -n "$root" ]]; then
+    rm -rf -- "$root" >/dev/null 2>&1 || return 1
+    [[ ! -e "$root" && ! -L "$root" ]] || return 1
+  fi
+
   SESSION_AUTH_ACTIVE=0
   SESSION_ROOT=""
   SESSION_PARENT=""
-  if [[ -n "$root" ]]; then rm -rf -- "$root" >/dev/null 2>&1 || true; fi
 }
 
 cleanup_stage0() {
@@ -1805,11 +1817,13 @@ finish_session_auth() {
   local root="$SESSION_ROOT"
   [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
   restore_original_auth_environment || return 1
+
+  rm -rf -- "$root" || return 1
+  [[ ! -e "$root" && ! -L "$root" ]] || return 1
+
   SESSION_AUTH_ACTIVE=0
   SESSION_ROOT=""
   SESSION_PARENT=""
-  rm -rf -- "$root" || return 1
-  [[ ! -e "$root" && ! -L "$root" ]] || return 1
   log_ok "Session-only GitHub authentication state removed."
 }
 
@@ -2062,12 +2076,14 @@ if [[ -f "$dest_path/client/README.md" ]]; then log_ok "Customer client package 
 run_issue_smoke_test() {
   local issue_url="" issue_number="" child_rc=0 registration_rc=0
   local previous_signal_defer="$SIGNAL_DEFER_EXIT"
+  local previous_child_signal_defer="${ACTIVE_CHILD_SIGNAL_DEFER:-0}"
   log_info "Creating sanitized temporary support-channel smoke-test issue."
 
-  # Keep termination deferred until any successfully created issue has been
-  # registered for EXIT cleanup. run_interruptible_child still forwards a
-  # signal to an active child immediately.
+  # Issue creation is registration-critical: once the request may have reached
+  # GitHub, keep both shell termination and signal forwarding to this specific
+  # child deferred until its result can be registered for EXIT cleanup.
   SIGNAL_DEFER_EXIT=1
+  ACTIVE_CHILD_SIGNAL_DEFER=1
 
   if capture_interruptible_child issue_url gh issue create --repo "$TARGET_REPO" --title '[pilot-smoke] Stage-0 issue channel verification' --body 'Automated Stage-0 support-channel smoke test. No customer evidence, credentials, secrets, keys, tokens or authorization data included.'; then
     :
@@ -2091,7 +2107,8 @@ run_issue_smoke_test() {
   fi
 
   # The cleanup handle is now durable in shell state. Restore the caller's
-  # defer mode before propagating the pending signal or ordinary failure.
+  # child-forwarding and exit-defer modes before propagating the pending signal.
+  ACTIVE_CHILD_SIGNAL_DEFER="$previous_child_signal_defer"
   SIGNAL_DEFER_EXIT="$previous_signal_defer"
 
   if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
