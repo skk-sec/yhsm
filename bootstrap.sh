@@ -14,6 +14,31 @@ DRY_RUN=0
 ISSUE_SMOKE_TEST=0
 SMOKE_ISSUE_REPO=""
 SMOKE_ISSUE_NUMBER=""
+SESSION_AUTH_ACTIVE=0
+SESSION_ROOT=""
+SESSION_PARENT=""
+CLEANUP_ACTIVE=0
+ORIGINAL_HOME=""
+ORIGINAL_XDG_CONFIG_HOME_SET=0
+ORIGINAL_XDG_CONFIG_HOME=""
+ORIGINAL_GH_CONFIG_DIR_SET=0
+ORIGINAL_GH_CONFIG_DIR=""
+NORMAL_GH_CONFIG_FILE=""
+NORMAL_GH_CONFIG_EXISTED=0
+NORMAL_GH_CONFIG_SHA256=""
+NORMAL_GIT_CONFIG_FILE=""
+NORMAL_GIT_CONFIG_EXISTED=0
+NORMAL_GIT_CONFIG_SHA256=""
+NORMAL_XDG_GIT_CONFIG_FILE=""
+NORMAL_XDG_GIT_CONFIG_EXISTED=0
+NORMAL_XDG_GIT_CONFIG_SHA256=""
+ACTIVE_CHILD_PID=""
+PENDING_SIGNAL_STATUS=0
+PENDING_SIGNAL_NAME=""
+SIGNAL_DEFER_EXIT=0
+ACTIVE_CHILD_SIGNAL_DEFER=0
+ACTIVE_CHILD_SIGNAL_GROUP=0
+IGNORED_PATHS_RECORD=""
 
 sensitive_argv_key() {
   local key="$1"
@@ -168,8 +193,6 @@ print_argv_banner() {
         masked+=("$arg")
         ;;
       *)
-        # Unknown operands have not passed option validation yet. Never copy
-        # them verbatim into the startup banner.
         masked+=("***")
         ;;
     esac
@@ -187,13 +210,15 @@ usage() {
 Customer YubiHSM Stage-0 Bootstrap
 
 Usage:
+  bash ./bootstrap.sh <owner/repo> [options]
   bash ./bootstrap.sh --target-repo <owner/repo> [options]
 
 Examples:
+  bash ./bootstrap.sh example-org/pilot-repository
   bash ./bootstrap.sh --private-target --target-repo example-org/pilot-repository
 
 Options:
-  --target-repo <owner/repo>   Required customer repository cloned after bootstrap.
+  --target-repo <owner/repo>   Explicit repository cloned after bootstrap.
   --target-branch <branch>     Branch to clone. Default: main
   --workdir <path>             Parent directory for the clone. Default: ~/git
   --private-target             Private target: install/authenticate gh. Default.
@@ -207,12 +232,12 @@ Stage-0 scope:
   - Debian/Ubuntu apt-based hosts only.
   - Installs baseline repository-access tools only.
   - For private targets installs GitHub CLI from the official signed Debian repository.
-  - Requires a working system credential store and refuses gh plaintext token storage.
+  - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
   - Uses GitHub device/web authentication; token-bearing GitHub auth environment variables are rejected.
   - Verifies private repository and issue read access, clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
   - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
-  - The public Stage-0 repository contains no implicit private customer default; the customer channel is always explicit.
+  - The repository is always explicit; no private repository is selected implicitly.
 USAGE
 }
 
@@ -222,6 +247,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --target-repo)
       [[ $# -ge 2 && "${2:-}" != -* ]] || { log_error "--target-repo requires a repository operand."; exit 2; }
+      [[ -z "$TARGET_REPO" ]] || { log_error "Target repository may be specified only once."; exit 2; }
       TARGET_REPO="$2"
       shift 2
       ;;
@@ -255,16 +281,26 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    *)
+    --*)
       log_error "Unknown option (value redacted)."
       usage >&2
       exit 2
+      ;;
+    *)
+      if [[ -z "$TARGET_REPO" ]]; then
+        TARGET_REPO="$1"
+        shift
+      else
+        log_error "Unknown option (value redacted)."
+        usage >&2
+        exit 2
+      fi
       ;;
   esac
 done
 
 [[ -n "$TARGET_REPO" ]] || {
-  log_error "--target-repo is required; use the customer-specific private channel provided by the operator."
+  log_error "An explicit repository is required; pass owner/repository or --target-repo owner/repository."
   exit 2
 }
 [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log_error "Invalid --target-repo."; exit 2; }
@@ -342,11 +378,184 @@ reject_git_repository_environment() {
 
 reject_git_repository_environment || exit 1
 
+canonical_directory() {
+  local path="$1"
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  (cd -P -- "$path" 2>/dev/null && pwd -P)
+}
+
+read_single_path_record() {
+  local path="$1"
+  local -a records=()
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  mapfile -t records <"$path" || return 1
+  [[ "${#records[@]}" -eq 1 && -n "${records[0]}" ]] || return 1
+  printf '%s\n' "${records[0]}"
+}
+
+resolve_direct_git_config_paths() {
+  local repo_path="$1" marker git_dir_record git_dir common_dir_record common_dir
+  marker="$repo_path/.git"
+  if [[ -d "$marker" && ! -L "$marker" ]]; then
+    git_dir="$(canonical_directory "$marker")" || return 1
+  elif [[ -f "$marker" && ! -L "$marker" ]]; then
+    git_dir_record="$(read_single_path_record "$marker")" || return 1
+    [[ "$git_dir_record" == 'gitdir: '* ]] || return 1
+    git_dir_record="${git_dir_record#gitdir: }"
+    [[ -n "$git_dir_record" && "$git_dir_record" != *$'\n'* ]] || return 1
+    if [[ "$git_dir_record" != /* ]]; then git_dir_record="$repo_path/$git_dir_record"; fi
+    git_dir="$(canonical_directory "$git_dir_record")" || return 1
+  else
+    return 1
+  fi
+
+  common_dir="$git_dir"
+  if [[ -e "$git_dir/commondir" ]]; then
+    common_dir_record="$(read_single_path_record "$git_dir/commondir")" || return 1
+    [[ -n "$common_dir_record" && "$common_dir_record" != *$'\n'* ]] || return 1
+    if [[ "$common_dir_record" != /* ]]; then common_dir_record="$git_dir/$common_dir_record"; fi
+    common_dir="$(canonical_directory "$common_dir_record")" || return 1
+  fi
+  [[ "$common_dir/config" != *$'\n'* && "$git_dir/config.worktree" != *$'\n'* ]] || return 1
+  printf '%s\n%s\n' "$common_dir/config" "$git_dir/config.worktree"
+}
+
+make_cleanup_scoped_tempfile() {
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
+    [[ -n "$SESSION_ROOT" && -d "$SESSION_ROOT" && ! -L "$SESSION_ROOT" ]] || return 1
+    mktemp "$SESSION_ROOT/stage0-inspection.XXXXXX"
+    return
+  fi
+  mktemp
+}
+
+reject_direct_include_file() {
+  local config_path="$1" required="$2" records errors rc
+  if [[ ! -e "$config_path" && "$required" -eq 0 ]]; then return 0; fi
+  [[ -f "$config_path" && ! -L "$config_path" ]] || return 1
+  records="$(make_cleanup_scoped_tempfile)" || return 1
+  errors="$(make_cleanup_scoped_tempfile)" || { rm -f -- "$records"; return 1; }
+  if run_git_child_or_propagate_signal config --file "$config_path" --no-includes --null --name-only --get-regexp '^(include\.path|includeif\..*\.path)$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    rm -f -- "$records" "$errors"
+    return 2
+  fi
+  if [[ "$rc" -ne 1 || -s "$records" || -s "$errors" ]]; then
+    rm -f -- "$records" "$errors"
+    return 1
+  fi
+  rm -f -- "$records" "$errors"
+}
+
+reject_direct_repo_includes() {
+  local repo_path="$1" worktree_enabled rc
+  local -a paths=()
+  mapfile -t paths < <(resolve_direct_git_config_paths "$repo_path") || return 1
+  [[ "${#paths[@]}" -eq 2 ]] || return 1
+  local config_path="${paths[0]}" worktree_config="${paths[1]}"
+
+  reject_direct_include_file "$config_path" 1
+  rc=$?
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  worktree_enabled=''
+  if capture_git_child_or_propagate_signal worktree_enabled config --file "$config_path" --no-includes --type=bool --get extensions.worktreeConfig 2>/dev/null; then
+    [[ "$worktree_enabled" == true || "$worktree_enabled" == false ]] || return 1
+  else
+    rc=$?
+    [[ "$rc" -eq 1 ]] || return 1
+    worktree_enabled=false
+  fi
+  if [[ "$worktree_enabled" == true ]]; then
+    reject_direct_include_file "$worktree_config" 0 || return $?
+  fi
+}
+
+reject_direct_submodule_includes() {
+  local repo_path="$1" modules_file records errors rc entry submodule_path nested_repo repo_root nested_root records_fd
+  modules_file="$repo_path/.gitmodules"
+  [[ -e "$modules_file" ]] || return 0
+  [[ -f "$modules_file" && ! -L "$modules_file" ]] || return 1
+  records="$(make_cleanup_scoped_tempfile)" || return 1
+  errors="$(make_cleanup_scoped_tempfile)" || { rm -f -- "$records"; return 1; }
+  if run_git_child_or_propagate_signal config --file "$modules_file" --no-includes --null --get-regexp '^submodule\..*\.path$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
+  if [[ "$rc" -ne 0 && ( "$rc" -ne 1 || -s "$records" || -s "$errors" ) ]]; then
+    rm -f -- "$records" "$errors"
+    return 1
+  fi
+  repo_root="$(canonical_directory "$repo_path")" || { rm -f -- "$records" "$errors"; return 1; }
+  if [[ "$rc" -eq 0 ]]; then
+    exec {records_fd}<"$records" || { rm -f -- "$records" "$errors"; return 1; }
+    while IFS= read -r -d '' entry <&"$records_fd"; do
+      [[ "$entry" == *$'\n'* ]] || { exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1; }
+      submodule_path="${entry#*$'\n'}"
+      case "$submodule_path" in
+        ''|/*|..|../*|*/..|*/../*|*$'\n'*) exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1 ;;
+      esac
+      nested_repo="$repo_path/$submodule_path"
+      if [[ -L "$nested_repo" ]]; then
+        exec {records_fd}<&-
+        rm -f -- "$records" "$errors"
+        return 3
+      fi
+      [[ -e "$nested_repo/.git" ]] || continue
+      nested_root="$(canonical_directory "$nested_repo")" || { exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1; }
+      if [[ "$nested_root" == "$repo_root" ]]; then
+        exec {records_fd}<&-
+        rm -f -- "$records" "$errors"
+        return 1
+      fi
+      case "$nested_root/" in "$repo_root/"*) ;; *) exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1 ;; esac
+      reject_direct_repo_includes "$nested_root" || { rc=$?; exec {records_fd}<&-; rm -f -- "$records" "$errors"; return "$rc"; }
+      reject_direct_submodule_includes "$nested_root" || { rc=$?; exec {records_fd}<&-; rm -f -- "$records" "$errors"; return "$rc"; }
+    done
+    exec {records_fd}<&-
+  fi
+  rm -f -- "$records" "$errors"
+}
+
 reject_existing_clone_execution_config() {
-  local repo_path="$1" config_records config_errors config_rc scope entry submodule_output
-  config_records="$(mktemp)"
-  config_errors="$(mktemp)"
-  if git -C "$repo_path" config --null --show-scope --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
+  local repo_path="$1" neutral_config config_records config_errors config_rc scope entry submodule_output direct_rc submodule_inspection_root
+
+  neutral_config="$(make_cleanup_scoped_tempfile)" || return 1
+  if run_git_child_or_propagate_signal config --file "$neutral_config" --no-includes --show-scope --get-regexp '^$' >/dev/null 2>&1; then
+    rm -f -- "$neutral_config"
+    log_error "Unable to probe Git configuration capability safely; refusing Stage-0 onboarding."
+    return 1
+  else
+    config_rc=$?
+  fi
+  rm -f -- "$neutral_config"
+  if [[ "$config_rc" -ne 1 ]]; then
+    log_error "Git 2.26 or newer is required to inspect an existing clone safely; upgrade Git or use a fresh workdir."
+    return 1
+  fi
+
+  reject_direct_repo_includes "$repo_path"
+  direct_rc=$?
+  if [[ "$direct_rc" -ne 0 ]]; then
+    if [[ "$direct_rc" -eq 2 ]]; then
+      log_error "Existing clone has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust."
+    else
+      log_error "Unable to inspect Git include configuration directly; refusing Stage-0 onboarding."
+    fi
+    return 1
+  fi
+  reject_direct_submodule_includes "$repo_path"
+  direct_rc=$?
+  if [[ "$direct_rc" -ne 0 ]]; then
+    if [[ "$direct_rc" -eq 2 ]]; then
+      log_error "An initialized submodule has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust."
+    elif [[ "$direct_rc" -eq 3 ]]; then
+      log_error "A registered submodule root is a symbolic link; refusing repository-context submodule inspection before trust."
+    else
+      log_error "Unable to inspect initialized-submodule Git include configuration directly; refusing Stage-0 onboarding."
+    fi
+    return 1
+  fi
+
+  config_records="$(make_cleanup_scoped_tempfile)" || return 1
+  config_errors="$(make_cleanup_scoped_tempfile)" || { rm -f -- "$config_records"; return 1; }
+  if run_git_child_or_propagate_signal -C "$repo_path" config --null --show-scope --includes --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
     config_rc=0
   else
     config_rc=$?
@@ -388,12 +597,33 @@ reject_existing_clone_execution_config() {
   fi
   rm -f -- "$config_records" "$config_errors"
 
-  if ! submodule_output="$(
-    git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+  submodule_inspection_root=''
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
+    if [[ -z "$SESSION_ROOT" || ! -d "$SESSION_ROOT" || -L "$SESSION_ROOT" ]]; then
+      log_error "Unable to bind initialized-submodule inspection files to the protected session root; refusing Stage-0 onboarding."
+      return 1
+    fi
+    submodule_inspection_root="$SESSION_ROOT"
+  fi
+  STAGE0_SUBMODULE_INSPECTION_ROOT="$submodule_inspection_root"
+  export STAGE0_SUBMODULE_INSPECTION_ROOT
+
+  # Nested submodule commands are intentionally literal until executed in the submodule context.
+  # shellcheck disable=SC2016
+  if ! capture_git_process_group_child_combined_or_propagate_signal submodule_output -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
       bash -c '\''
-        records="$(mktemp)" || exit 93
-        errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
-        if git config --null --show-scope --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree|http\\..*|remote\\..*\\.(proxy|proxyAuthMethod))$" >"$records" 2>"$errors"; then
+        if [[ -n "${STAGE0_SUBMODULE_INSPECTION_ROOT:-}" ]]; then
+          if [[ ! -d "$STAGE0_SUBMODULE_INSPECTION_ROOT" || -L "$STAGE0_SUBMODULE_INSPECTION_ROOT" ]]; then
+            printf "%s\\n" STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED
+            exit 93
+          fi
+          records="$(mktemp "$STAGE0_SUBMODULE_INSPECTION_ROOT/stage0-submodule-inspection.XXXXXX")" || exit 93
+          errors="$(mktemp "$STAGE0_SUBMODULE_INSPECTION_ROOT/stage0-submodule-inspection.XXXXXX")" || { rm -f -- "$records"; exit 93; }
+        else
+          records="$(mktemp)" || exit 93
+          errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
+        fi
+        if git config --null --show-scope --includes --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree|http\\..*|remote\\..*\\.(proxy|proxyAuthMethod))$" >"$records" 2>"$errors"; then
           rc=0
         else
           rc=$?
@@ -435,8 +665,8 @@ reject_existing_clone_execution_config() {
         fi
         rm -f -- "$records" "$errors"
       '\''
-    ' 2>&1
-  )"; then
+    '; then
+    unset STAGE0_SUBMODULE_INSPECTION_ROOT
     if [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED"* ]]; then
       log_error "Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding."
     elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG"* ]]; then
@@ -446,6 +676,7 @@ reject_existing_clone_execution_config() {
     fi
     return 1
   fi
+  unset STAGE0_SUBMODULE_INSPECTION_ROOT
 }
 
 if [[ ! -r /etc/os-release ]]; then
@@ -482,9 +713,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log_info "(dry-run) install ca-certificates and git if missing"
   if [[ "$TARGET_VISIBILITY" == "private" ]]; then
     log_info "(dry-run) install GitHub CLI from the official signed Debian repository if missing"
-    log_info "(dry-run) require and verify a secure system credential store"
+    log_info "(dry-run) prefer and verify a secure system credential store; otherwise use verified RAM-backed session-only auth"
     log_info "(dry-run) authenticate with GitHub device/web flow if not already authenticated"
-    log_info "(dry-run) configure gh as the Git credential helper"
+    log_info "(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context"
     log_info "(dry-run) verify private repository and issue read access"
   fi
   log_info "(dry-run) clone exact branch '$TARGET_BRANCH' from $TARGET_REPO"
@@ -1179,18 +1410,14 @@ reject_plaintext_gh_credentials() {
 
 verify_secure_gh_credential_backend() {
   local probe_service probe_value='stage0-credential-backend-probe' probe_readback
-  command -v secret-tool >/dev/null 2>&1 || { log_error "Secure credential backend probe requires secret-tool."; return 1; }
+  command -v secret-tool >/dev/null 2>&1 || return 1
   probe_service="yhsm-stage0-probe-${EUID}-$$"
   if ! printf '%s' "$probe_value" | secret-tool store --label='YHSM Stage-0 credential-backend probe' service "$probe_service" account probe >/dev/null 2>&1; then
-    log_error "No usable system credential store is available; GitHub authentication is blocked to prevent plaintext-token fallback."
     return 1
   fi
   probe_readback="$(secret-tool lookup service "$probe_service" account probe 2>/dev/null || true)"
   secret-tool clear service "$probe_service" account probe >/dev/null 2>&1 || true
-  [[ "$probe_readback" == "$probe_value" ]] || {
-    log_error "System credential store failed its write/read/clear probe; GitHub authentication is blocked."
-    return 1
-  }
+  [[ "$probe_readback" == "$probe_value" ]] || return 1
   log_ok "Secure GitHub credential-backend contract verified."
 }
 
@@ -1205,7 +1432,7 @@ restore_gh_config_snapshot() {
 }
 
 run_gh_device_login_fail_closed() {
-  local config_file config_dir snapshot_dir backup_file existed=0
+  local config_file config_dir snapshot_dir backup_file existed=0 login_rc=0 result_rc=0
   config_file="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
   config_dir="$(dirname -- "$config_file")"
   snapshot_dir="$(mktemp -d)"
@@ -1217,47 +1444,651 @@ run_gh_device_login_fail_closed() {
     existed=1
   fi
   mkdir -p "$config_dir"
-  if ! gh auth login --hostname github.com --git-protocol https --web; then
+
+  SIGNAL_DEFER_EXIT=1
+  if run_interruptible_child gh auth login --hostname github.com --git-protocol https --web; then
+    login_rc=0
+  else
+    login_rc=$?
+  fi
+
+  if [[ "$login_rc" -ne 0 || "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    result_rc="$login_rc"
+    [[ "$PENDING_SIGNAL_STATUS" -eq 0 ]] || result_rc="$PENDING_SIGNAL_STATUS"
     restore_gh_config_snapshot "$config_file" "$backup_file" "$existed"
     rm -rf -- "$snapshot_dir"
-    log_error "GitHub device/web authentication failed; the previous gh configuration was restored."
-    return 1
+    [[ "$PENDING_SIGNAL_STATUS" -eq 0 ]] || result_rc="$PENDING_SIGNAL_STATUS"
+    SIGNAL_DEFER_EXIT=0
+    log_error "GitHub device/web authentication failed or was interrupted; the previous gh configuration was restored."
+    return "$result_rc"
   fi
+
   if ! reject_plaintext_gh_credentials; then
+    result_rc=1
     restore_gh_config_snapshot "$config_file" "$backup_file" "$existed"
     rm -rf -- "$snapshot_dir"
+    [[ "$PENDING_SIGNAL_STATUS" -eq 0 ]] || result_rc="$PENDING_SIGNAL_STATUS"
+    SIGNAL_DEFER_EXIT=0
     log_error "GitHub CLI plaintext fallback was removed and the previous gh configuration was restored."
-    return 1
+    return "$result_rc"
   fi
+
   rm -rf -- "$snapshot_dir"
+  [[ "$PENDING_SIGNAL_STATUS" -eq 0 ]] || result_rc="$PENDING_SIGNAL_STATUS"
+  SIGNAL_DEFER_EXIT=0
+  [[ "$result_rc" -eq 0 ]] || return "$result_rc"
+}
+
+capture_file_state() {
+  local path="$1" existed_name="$2" hash_name="$3" hash_value=""
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    printf -v "$existed_name" '%s' 1
+    hash_value="$(sha256sum -- "$path" | awk '{print $1}')" || return 1
+    printf -v "$hash_name" '%s' "$hash_value"
+  elif [[ -e "$path" || -L "$path" ]]; then
+    return 1
+  else
+    printf -v "$existed_name" '%s' 0
+    printf -v "$hash_name" '%s' ''
+  fi
+}
+
+verify_file_state_unchanged() {
+  local path="$1" existed="$2" expected_hash="$3" actual_hash
+  if [[ "$existed" -eq 1 ]]; then
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    actual_hash="$(sha256sum -- "$path" | awk '{print $1}')" || return 1
+    [[ "$actual_hash" == "$expected_hash" ]]
+  else
+    [[ ! -e "$path" && ! -L "$path" ]]
+  fi
+}
+
+capture_normal_auth_state() {
+  ORIGINAL_HOME="$HOME"
+  if [[ -v XDG_CONFIG_HOME ]]; then
+    ORIGINAL_XDG_CONFIG_HOME_SET=1
+    ORIGINAL_XDG_CONFIG_HOME="$XDG_CONFIG_HOME"
+  else
+    ORIGINAL_XDG_CONFIG_HOME_SET=0
+    ORIGINAL_XDG_CONFIG_HOME=""
+  fi
+  if [[ -v GH_CONFIG_DIR ]]; then
+    ORIGINAL_GH_CONFIG_DIR_SET=1
+    ORIGINAL_GH_CONFIG_DIR="$GH_CONFIG_DIR"
+  else
+    ORIGINAL_GH_CONFIG_DIR_SET=0
+    ORIGINAL_GH_CONFIG_DIR=""
+  fi
+  NORMAL_GH_CONFIG_FILE="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
+  NORMAL_GIT_CONFIG_FILE="$HOME/.gitconfig"
+  NORMAL_XDG_GIT_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
+  capture_file_state "$NORMAL_GH_CONFIG_FILE" NORMAL_GH_CONFIG_EXISTED NORMAL_GH_CONFIG_SHA256 || return 1
+  capture_file_state "$NORMAL_GIT_CONFIG_FILE" NORMAL_GIT_CONFIG_EXISTED NORMAL_GIT_CONFIG_SHA256 || return 1
+  if [[ "$NORMAL_XDG_GIT_CONFIG_FILE" != "$NORMAL_GIT_CONFIG_FILE" ]]; then
+    capture_file_state "$NORMAL_XDG_GIT_CONFIG_FILE" NORMAL_XDG_GIT_CONFIG_EXISTED NORMAL_XDG_GIT_CONFIG_SHA256 || return 1
+  fi
+}
+
+verify_normal_auth_state_unchanged() {
+  verify_file_state_unchanged "$NORMAL_GH_CONFIG_FILE" "$NORMAL_GH_CONFIG_EXISTED" "$NORMAL_GH_CONFIG_SHA256" || return 1
+  verify_file_state_unchanged "$NORMAL_GIT_CONFIG_FILE" "$NORMAL_GIT_CONFIG_EXISTED" "$NORMAL_GIT_CONFIG_SHA256" || return 1
+  if [[ "$NORMAL_XDG_GIT_CONFIG_FILE" != "$NORMAL_GIT_CONFIG_FILE" ]]; then
+    verify_file_state_unchanged "$NORMAL_XDG_GIT_CONFIG_FILE" "$NORMAL_XDG_GIT_CONFIG_EXISTED" "$NORMAL_XDG_GIT_CONFIG_SHA256" || return 1
+  fi
+}
+
+safe_tmpfs_parent() {
+  local run_user="/run/user/$EUID"
+  if [[ -d "$run_user" && ! -L "$run_user" ]] &&
+     [[ "$(stat -c '%u' -- "$run_user" 2>/dev/null || true)" == "$EUID" ]] &&
+     [[ "$(stat -f -c '%T' -- "$run_user" 2>/dev/null || true)" == "tmpfs" ]]; then
+    printf '%s\n' "$run_user"
+    return 0
+  fi
+  if [[ -d /dev/shm && ! -L /dev/shm ]] &&
+     [[ "$(stat -f -c '%T' -- /dev/shm 2>/dev/null || true)" == "tmpfs" ]]; then
+    printf '%s\n' /dev/shm
+    return 0
+  fi
+  return 1
+}
+
+start_session_auth() {
+  local mode
+  capture_normal_auth_state || { log_error "Unable to snapshot normal GitHub/Git configuration before session-only authentication."; return 1; }
+  SESSION_PARENT="$(safe_tmpfs_parent)" || {
+    log_error "No verified tmpfs is available for session-only GitHub authentication; refusing plaintext fallback."
+    return 1
+  }
+  SESSION_ROOT="$(mktemp -d "$SESSION_PARENT/yhsm-stage0-session.XXXXXX")" || return 1
+  chmod 0700 "$SESSION_ROOT" || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  [[ ! -L "$SESSION_ROOT" && "$(stat -c '%u' -- "$SESSION_ROOT")" == "$EUID" ]] || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  mode="$(stat -c '%a' -- "$SESSION_ROOT")" || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  [[ "$mode" == "700" ]] || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
+  mkdir -p "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
+  chmod 0700 "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
+  export HOME="$SESSION_ROOT/home"
+  export XDG_CONFIG_HOME="$SESSION_ROOT/xdg"
+  export GH_CONFIG_DIR="$SESSION_ROOT/gh"
+  SESSION_AUTH_ACTIVE=1
+  log_info "Secure OS credential store unavailable; using verified RAM-backed session-only GitHub authentication."
+}
+
+restore_original_auth_environment() {
+  export HOME="$ORIGINAL_HOME"
+  if [[ "$ORIGINAL_XDG_CONFIG_HOME_SET" -eq 1 ]]; then
+    export XDG_CONFIG_HOME="$ORIGINAL_XDG_CONFIG_HOME"
+  else
+    unset XDG_CONFIG_HOME
+  fi
+  if [[ "$ORIGINAL_GH_CONFIG_DIR_SET" -eq 1 ]]; then
+    export GH_CONFIG_DIR="$ORIGINAL_GH_CONFIG_DIR"
+  else
+    unset GH_CONFIG_DIR
+  fi
+}
+
+forward_termination_signal() {
+  local signal_name="$1" signal_status="$2" pid="${ACTIVE_CHILD_PID:-}"
+  PENDING_SIGNAL_NAME="$signal_name"
+  PENDING_SIGNAL_STATUS="$signal_status"
+
+  if [[ -n "$pid" ]]; then
+    if [[ "$pid" =~ ^[0-9]+$ && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
+      if [[ "${ACTIVE_CHILD_SIGNAL_GROUP:-0}" -eq 1 ]]; then
+        kill -s "$signal_name" -- "-$pid" 2>/dev/null || true
+      else
+        kill -s "$signal_name" "$pid" 2>/dev/null || true
+      fi
+    fi
+    return 0
+  fi
+
+  if [[ "$SIGNAL_DEFER_EXIT" -eq 1 ]]; then
+    return 0
+  fi
+
+  exit "$signal_status"
+}
+
+run_interruptible_child() {
+  local rc child_pid
+
+  ACTIVE_CHILD_PID="pending"
+  (
+    if [[ "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 1 ]]; then
+      # Registration-critical children must also survive HUP/INT/TERM delivered
+      # directly to the foreground process group until cleanup registration.
+      trap '' HUP INT TERM
+    else
+      # Non-job-control Bash gives asynchronous children an ignored SIGINT.
+      # Reset termination dispositions in the forked shell before exec.
+      trap - HUP INT TERM
+    fi
+    exec "$@"
+  ) &
+  child_pid=$!
+  ACTIVE_CHILD_PID="$child_pid"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
+    kill -s "${PENDING_SIGNAL_NAME:-TERM}" "$child_pid" 2>/dev/null || true
+  fi
+
+  while true; do
+    if wait "$child_pid"; then
+      rc=0
+      break
+    else
+      rc=$?
+    fi
+
+    if kill -0 "$child_pid" 2>/dev/null; then
+      if [[ "$PENDING_SIGNAL_STATUS" -ne 0 && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
+        kill -s "${PENDING_SIGNAL_NAME:-TERM}" "$child_pid" 2>/dev/null || true
+      fi
+      continue
+    fi
+    break
+  done
+
+  ACTIVE_CHILD_PID=""
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    return "$PENDING_SIGNAL_STATUS"
+  fi
+  return "$rc"
+}
+
+run_interruptible_process_group_child() {
+  local rc child_pid attempt group_ready=0
+
+  command -v setsid >/dev/null 2>&1 || return 127
+  ACTIVE_CHILD_SIGNAL_GROUP=1
+  ACTIVE_CHILD_PID="pending"
+  (
+    trap - HUP INT TERM
+    exec setsid "$@"
+  ) &
+  child_pid=$!
+
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    if kill -0 -- "-$child_pid" 2>/dev/null; then
+      group_ready=1
+      break
+    fi
+    kill -0 "$child_pid" 2>/dev/null || break
+    sleep 0.01
+  done
+
+  if [[ "$group_ready" -ne 1 ]]; then
+    if kill -0 "$child_pid" 2>/dev/null; then
+      kill -s TERM "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+      rc=127
+    elif wait "$child_pid"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_SIGNAL_GROUP=0
+    if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+      return "$PENDING_SIGNAL_STATUS"
+    fi
+    return "$rc"
+  fi
+
+  ACTIVE_CHILD_PID="$child_pid"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    kill -s "${PENDING_SIGNAL_NAME:-TERM}" -- "-$child_pid" 2>/dev/null || true
+  fi
+
+  while true; do
+    if wait "$child_pid"; then
+      rc=0
+      break
+    else
+      rc=$?
+    fi
+
+    if kill -0 "$child_pid" 2>/dev/null; then
+      if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+        kill -s "${PENDING_SIGNAL_NAME:-TERM}" -- "-$child_pid" 2>/dev/null || true
+      fi
+      continue
+    fi
+    break
+  done
+
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_SIGNAL_GROUP=0
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    return "$PENDING_SIGNAL_STATUS"
+  fi
+  return "$rc"
+}
+
+capture_interruptible_child() {
+  local output_name="$1" capture_root capture_file rc output
+  shift
+
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    capture_root="$SESSION_ROOT"
+  else
+    capture_root="${TMPDIR:-/tmp}"
+  fi
+
+  capture_file="$(mktemp "$capture_root/yhsm-stage0-output.XXXXXX")" || return 1
+  if run_interruptible_child "$@" >"$capture_file"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  output="$(cat -- "$capture_file")" || {
+    rm -f -- "$capture_file"
+    return 1
+  }
+  printf -v "$output_name" '%s' "$output"
+
+  rm -f -- "$capture_file"
+  return "$rc"
+}
+
+run_git_child_or_propagate_signal() {
+  local rc
+
+  if run_interruptible_child git "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+
+capture_git_child_or_propagate_signal() {
+  local output_name="$1" rc
+  shift
+
+  if capture_interruptible_child "$output_name" git "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+capture_git_child_combined_or_propagate_signal() {
+  local output_name="$1" capture_root capture_file rc output
+  shift
+
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    capture_root="$SESSION_ROOT"
+  else
+    capture_root="${TMPDIR:-/tmp}"
+  fi
+
+  capture_file="$(mktemp "$capture_root/yhsm-stage0-git-output.XXXXXX")" || return 1
+
+  if run_interruptible_child git "$@" >"$capture_file" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  output="$(cat -- "$capture_file")" || {
+    rm -f -- "$capture_file"
+    return 1
+  }
+  printf -v "$output_name" '%s' "$output"
+  rm -f -- "$capture_file"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+capture_git_process_group_child_combined_or_propagate_signal() {
+  local output_name="$1" capture_root capture_file rc output
+  shift
+
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    capture_root="$SESSION_ROOT"
+  else
+    capture_root="${TMPDIR:-/tmp}"
+  fi
+
+  capture_file="$(mktemp "$capture_root/yhsm-stage0-git-output.XXXXXX")" || return 1
+
+  if run_interruptible_process_group_child git "$@" >"$capture_file" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  output="$(cat -- "$capture_file")" || {
+    rm -f -- "$capture_file"
+    return 1
+  }
+  printf -v "$output_name" '%s' "$output"
+  rm -f -- "$capture_file"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+cleanup_issue_smoke_test() {
+  if [[ -z "$SMOKE_ISSUE_REPO" || -z "$SMOKE_ISSUE_NUMBER" ]]; then return 0; fi
+  gh issue close "$SMOKE_ISSUE_NUMBER" --repo "$SMOKE_ISSUE_REPO" --comment 'Stage-0 cleanup closed the temporary smoke-test issue after an interrupted verification.' >/dev/null 2>&1 || true
+  SMOKE_ISSUE_REPO=""
+  SMOKE_ISSUE_NUMBER=""
+}
+
+cleanup_ignored_paths_record() {
+  local path="$IGNORED_PATHS_RECORD"
+  [[ -n "$path" ]] || return 0
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    rm -f -- "$path" || return 1
+  fi
+  IGNORED_PATHS_RECORD=""
+}
+
+cleanup_session_auth_best_effort() {
+  local root="$SESSION_ROOT"
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
+  restore_original_auth_environment || true
+
+  if [[ -n "$root" ]]; then
+    rm -rf -- "$root" >/dev/null 2>&1 || return 1
+    [[ ! -e "$root" && ! -L "$root" ]] || return 1
+  fi
+
+  SESSION_AUTH_ACTIVE=0
+  SESSION_ROOT=""
+  SESSION_PARENT=""
+}
+
+cleanup_stage0() {
+  local rc=$?
+  if [[ "$CLEANUP_ACTIVE" -eq 1 ]]; then return "$rc"; fi
+  CLEANUP_ACTIVE=1
+  cleanup_ignored_paths_record || true
+  cleanup_issue_smoke_test || true
+  cleanup_session_auth_best_effort || true
+  CLEANUP_ACTIVE=0
+  return "$rc"
+}
+
+trap cleanup_stage0 EXIT
+trap 'forward_termination_signal HUP 129' HUP
+trap 'forward_termination_signal INT 130' INT
+trap 'forward_termination_signal TERM 143' TERM
+
+run_gh_session_login() {
+  local session_hosts mode child_rc
+  start_session_auth || return 1
+  log_info "Complete the one-time GitHub Device/Web flow shown by GitHub CLI."
+
+  if run_interruptible_child gh auth login --hostname github.com --git-protocol https --web --insecure-storage; then
+    :
+  else
+    child_rc=$?
+    log_error "GitHub session-only device/web authentication failed or was interrupted."
+    return "$child_rc"
+  fi
+
+  session_hosts="$GH_CONFIG_DIR/hosts.yml"
+  case "$session_hosts/" in "$SESSION_ROOT/"*) ;; *) log_error "Session GitHub configuration escaped the RAM-backed session root."; return 1 ;; esac
+  [[ -f "$session_hosts" && ! -L "$session_hosts" ]] || { log_error "Session GitHub configuration was not created as a regular file."; return 1; }
+  [[ "$(stat -c '%u' -- "$session_hosts")" == "$EUID" ]] || { log_error "Session GitHub configuration has an unexpected owner."; return 1; }
+  mode="$(stat -c '%a' -- "$session_hosts")" || return 1
+  case "$mode" in 600|400) ;; *) log_error "Session GitHub configuration permissions are too broad."; return 1 ;; esac
+  grep -Eq '^[[:space:]]*oauth_token[[:space:]]*:' "$session_hosts" || { log_error "Session-only GitHub authentication did not produce the expected isolated credential record."; return 1; }
+
+  if run_interruptible_child gh auth status --hostname github.com >/dev/null 2>&1; then
+    :
+  else
+    child_rc=$?
+    log_error "Session-only GitHub authentication could not be verified."
+    return "$child_rc"
+  fi
+
+  run_interruptible_child gh auth setup-git --hostname github.com || return $?
+  log_ok "Session-only GitHub authentication verified in RAM-backed storage."
+}
+
+verify_direct_repo_has_no_credential_helper() {
+  local repo_path="$1" config_path rc
+  local -a paths=()
+  mapfile -t paths < <(resolve_direct_git_config_paths "$repo_path") || return 1
+  [[ "${#paths[@]}" -eq 2 ]] || return 1
+  for config_path in "${paths[@]}"; do
+    [[ -e "$config_path" ]] || continue
+    if run_git_child_or_propagate_signal config --file "$config_path" --no-includes --get-regexp '^credential(\..*)?\.helper$' >/dev/null 2>&1; then
+      return 1
+    else
+      rc=$?
+      [[ "$rc" -eq 1 ]] || return 1
+    fi
+  done
+}
+
+verify_raw_origin_urls_exact() {
+  local repo_path="$1" expected_url_1="$2" expected_url_2="$3"
+  local config_output config_path key raw_values url rc saw_fetch=0
+  local -a paths=()
+
+  config_output="$(resolve_direct_git_config_paths "$repo_path")" || return 1
+  mapfile -t paths <<<"$config_output"
+  [[ "${#paths[@]}" -eq 2 ]] || return 1
+
+  for config_path in "${paths[@]}"; do
+    [[ -e "$config_path" ]] || continue
+    [[ -f "$config_path" && ! -L "$config_path" ]] || return 1
+
+    for key in remote.origin.url remote.origin.pushurl; do
+      raw_values=''
+      if capture_git_child_or_propagate_signal raw_values config --file "$config_path" --no-includes --get-all "$key" 2>/dev/null; then
+        [[ -n "$raw_values" ]] || return 1
+
+        while IFS= read -r url; do
+          [[ -n "$url" ]] || return 1
+
+          if [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/@]+@ ]]; then
+            return 1
+          fi
+
+          case "$url" in
+            "$expected_url_1"|"$expected_url_2") ;;
+            *) return 1 ;;
+          esac
+
+          if [[ "$key" == "remote.origin.url" ]]; then
+            saw_fetch=1
+          fi
+        done <<<"$raw_values"
+      else
+        rc=$?
+        [[ "$rc" -eq 1 ]] || return 1
+      fi
+    done
+  done
+
+  [[ "$saw_fetch" -eq 1 ]]
+}
+
+verify_origin_urls_exact() {
+  local repo_path="$1" expected_url_1="$2" expected_url_2="$3" origin_urls url kind
+
+  verify_raw_origin_urls_exact "$repo_path" "$expected_url_1" "$expected_url_2" || return 1
+
+  for kind in fetch push; do
+    if [[ "$kind" == "fetch" ]]; then
+      origin_urls=''
+      capture_git_child_or_propagate_signal origin_urls -C "$repo_path" remote get-url --all origin 2>/dev/null || return 1
+    else
+      origin_urls=''
+      capture_git_child_or_propagate_signal origin_urls -C "$repo_path" remote get-url --push --all origin 2>/dev/null || return 1
+    fi
+
+    [[ -n "$origin_urls" ]] || return 1
+    while IFS= read -r url; do
+      [[ -n "$url" ]] || return 1
+      if [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/@]+@ ]]; then
+        return 1
+      fi
+      case "$url" in
+        "$expected_url_1"|"$expected_url_2") ;;
+        *) return 1 ;;
+      esac
+    done <<<"$origin_urls"
+  done
+}
+
+verify_session_postconditions() {
+  local repo_path="$1"
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
+  verify_normal_auth_state_unchanged || { log_error "Normal GitHub/Git configuration changed during session-only onboarding."; return 1; }
+  case "$HOME/" in "$SESSION_ROOT/"*) ;; *) log_error "Session HOME escaped the RAM-backed session root."; return 1 ;; esac
+  case "$XDG_CONFIG_HOME/" in "$SESSION_ROOT/"*) ;; *) log_error "Session XDG config escaped the RAM-backed session root."; return 1 ;; esac
+  case "$GH_CONFIG_DIR/" in "$SESSION_ROOT/"*) ;; *) log_error "Session GitHub config escaped the RAM-backed session root."; return 1 ;; esac
+  verify_direct_repo_has_no_credential_helper "$repo_path" || { log_error "Clone retained a repository-local credential helper after session-only onboarding."; return 1; }
+  verify_origin_urls_exact "$repo_path" "$clone_url" "https://github.com/$TARGET_REPO" || {
+    log_error "Clone contains an unexpected or credential-bearing origin fetch/push URL; refusing session cleanup readback."
+    return 1
+  }
+  log_ok "Session-only authentication postconditions verified."
+}
+
+finish_session_auth() {
+  local root="$SESSION_ROOT"
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
+  restore_original_auth_environment || return 1
+
+  rm -rf -- "$root" || return 1
+  [[ ! -e "$root" && ! -L "$root" ]] || return 1
+
+  SESSION_AUTH_ACTIVE=0
+  SESSION_ROOT=""
+  SESSION_PARENT=""
+  log_ok "Session-only GitHub authentication state removed."
 }
 
 if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   install_gh
-  verify_secure_gh_credential_backend
   reject_plaintext_gh_credentials
-  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
-    log_info "GitHub authentication required for the private customer repository."
+  if gh auth status --hostname github.com >/dev/null 2>&1; then
+    log_ok "GitHub authentication already present."
+    gh auth setup-git --hostname github.com
+  elif verify_secure_gh_credential_backend; then
+    log_info "GitHub authentication required for the private repository."
     log_info "Complete the one-time device/web flow shown by GitHub CLI."
     run_gh_device_login_fail_closed
+    reject_plaintext_gh_credentials
+    gh auth setup-git --hostname github.com
   else
-    log_ok "GitHub authentication already present."
+    run_gh_session_login
   fi
-  reject_plaintext_gh_credentials
-  gh auth setup-git --hostname github.com
-  gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null || {
-    log_error "Authenticated GitHub account cannot access the target repository."; exit 1
-  }
-  gh issue list --repo "$TARGET_REPO" --limit 1 >/dev/null || {
-    log_error "Authenticated GitHub account cannot read issues in the target repository."; exit 1
-  }
+  if run_interruptible_child gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null; then
+    :
+  else
+    stage0_child_rc=$?
+    log_error "Authenticated GitHub account cannot access the target repository."
+    exit "$stage0_child_rc"
+  fi
+  if run_interruptible_child gh issue list --repo "$TARGET_REPO" --limit 1 >/dev/null; then
+    :
+  else
+    stage0_child_rc=$?
+    log_error "Authenticated GitHub account cannot read issues in the target repository."
+    exit "$stage0_child_rc"
+  fi
   log_ok "Private repository and issue read access verified."
 fi
 
 validate_initialized_submodules() {
   local repo_path="$1" submodule_output
-  if ! submodule_output="$(
-    git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+  # Nested submodule commands are intentionally literal until executed in the submodule context.
+  # shellcheck disable=SC2016
+  if ! capture_git_process_group_child_combined_or_propagate_signal submodule_output -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
       submodule_replace_refs="$(git for-each-ref --format="%(refname)" refs/replace/)" || {
         printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
         exit 93
@@ -1287,8 +2118,7 @@ validate_initialized_submodules() {
         printf "%s\n" STAGE0_SUBMODULE_DIRTY
         exit 92
       fi
-    ' 2>&1
-  )"; then
+    '; then
     if [[ "$submodule_output" == *"STAGE0_SUBMODULE_REPLACE_REF"* ]]; then
       log_error "An initialized submodule has Git replacement refs; refusing canonical onboarding readback."
     elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_HIDDEN_INDEX"* ]]; then
@@ -1305,24 +2135,32 @@ validate_initialized_submodules() {
 }
 
 mkdir -p "$WORKDIR"
-if [[ -e "$dest_path" && ! -d "$dest_path/.git" ]]; then
+if [[ -e "$dest_path" && ! -e "$dest_path/.git" ]]; then
   log_error "Clone destination exists but is not a Git repository."; exit 1
 fi
 
 remote_ref="refs/remotes/origin/$TARGET_BRANCH"
+repository_index=''
+repository_status=''
+repository_replace_refs=''
 
-if [[ -d "$dest_path/.git" ]]; then
-  actual_remote="$(git -C "$dest_path" remote get-url origin 2>/dev/null || true)"
-  case "$actual_remote" in
-    "$clone_url"|"https://github.com/$TARGET_REPO") ;;
-    *) log_error "Existing clone has an unexpected origin remote."; exit 1 ;;
-  esac
+if [[ -e "$dest_path/.git" ]]; then
   reject_existing_clone_execution_config "$dest_path" || exit 1
-  if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
+  verify_origin_urls_exact "$dest_path" "$clone_url" "https://github.com/$TARGET_REPO" || {
+    log_error "Existing clone has an unexpected or credential-bearing origin fetch/push URL."
+    exit 1
+  }
+  repository_replace_refs=''
+  if ! capture_git_child_or_propagate_signal repository_replace_refs -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/; then
+    log_error "Unable to inspect existing clone replacement refs; refusing canonical onboarding readback."
+    exit 1
+  fi
+  if [[ -n "$repository_replace_refs" ]]; then
     log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
     exit 1
   fi
-  if ! repository_index="$(git -c core.fsmonitor=false -C "$dest_path" ls-files -v)"; then
+  repository_index=''
+  if ! capture_git_child_or_propagate_signal repository_index -c core.fsmonitor=false -C "$dest_path" ls-files -v; then
     log_error "Unable to inspect existing clone index flags; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1330,7 +2168,7 @@ if [[ -d "$dest_path/.git" ]]; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
   fi
-  if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+  if ! capture_git_child_or_propagate_signal repository_status -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none; then
     log_error "Unable to inspect existing clone cleanliness; refusing to modify or report it as canonical."
     exit 1
   fi
@@ -1340,40 +2178,99 @@ if [[ -d "$dest_path/.git" ]]; then
   fi
   validate_initialized_submodules "$dest_path" || exit 1
   log_info "Existing clean clone found; fetching exact remote branch."
-  git -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
-  remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
+  run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
+  remote_head=''
+  if ! capture_git_child_or_propagate_signal remote_head -C "$dest_path" rev-parse "$remote_ref"; then
+    log_error "Unable to resolve the fetched remote branch."
+    exit 1
+  fi
+  ignored_paths_root="${TMPDIR:-/tmp}"
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    ignored_paths_root="$SESSION_ROOT"
+  fi
+  if ! IGNORED_PATHS_RECORD="$(mktemp "$ignored_paths_root/yhsm-stage0-ignored-paths.XXXXXX")"; then
+    log_error "Unable to create the ignored-file inspection record."
+    exit 1
+  fi
+  [[ -f "$IGNORED_PATHS_RECORD" && ! -L "$IGNORED_PATHS_RECORD" ]] || {
+    log_error "Ignored-file inspection record is not a regular file."
+    exit 1
+  }
+  if ! run_git_child_or_propagate_signal -c core.fsmonitor=false -C "$dest_path" ls-files --others --ignored --exclude-standard -z >"$IGNORED_PATHS_RECORD"; then
+    log_error "Unable to inspect ignored files in the existing clone."
+    exit 1
+  fi
   ignored_collision=0
   while IFS= read -r -d '' ignored_path; do
-    if git -C "$dest_path" cat-file -e "$remote_head:$ignored_path" 2>/dev/null; then
+    ignored_remote_match=''
+    if ! capture_git_child_or_propagate_signal ignored_remote_match --literal-pathspecs -C "$dest_path" ls-tree -r --name-only "$remote_head" -- "$ignored_path"; then
+      log_error "Unable to inspect an ignored-file collision against the selected remote branch."
+      exit 1
+    fi
+    if [[ -n "$ignored_remote_match" ]]; then
       ignored_collision=1
       break
     fi
-  done < <(git -c core.fsmonitor=false -C "$dest_path" ls-files --others --ignored --exclude-standard -z)
+  done <"$IGNORED_PATHS_RECORD"
+  cleanup_ignored_paths_record || {
+    log_error "Unable to remove the ignored-file inspection record."
+    exit 1
+  }
   if [[ "$ignored_collision" -eq 1 ]]; then
     log_error "Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state."
     exit 1
   fi
-  if git -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
-    git -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
+  if run_git_child_or_propagate_signal -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
+    run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
   else
-    git -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
-    git -C "$dest_path" config "branch.$TARGET_BRANCH.remote" origin
-    git -C "$dest_path" config "branch.$TARGET_BRANCH.merge" "refs/heads/$TARGET_BRANCH"
+    branch_ref_rc=$?
+    [[ "$branch_ref_rc" -eq 1 ]] || {
+      log_error "Unable to inspect the selected local branch ref."
+      exit 1
+    }
+    run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
+    run_git_child_or_propagate_signal -C "$dest_path" config "branch.$TARGET_BRANCH.remote" origin || {
+      log_error "Unable to configure the selected local branch remote."
+      exit 1
+    }
+    run_git_child_or_propagate_signal -C "$dest_path" config "branch.$TARGET_BRANCH.merge" "refs/heads/$TARGET_BRANCH" || {
+      log_error "Unable to configure the selected local branch merge ref."
+      exit 1
+    }
   fi
-  local_head="$(git -C "$dest_path" rev-parse HEAD)"
+  local_head=''
+  if ! capture_git_child_or_propagate_signal local_head -C "$dest_path" rev-parse HEAD; then
+    log_error "Unable to resolve the existing clone head."
+    exit 1
+  fi
   if [[ "$local_head" != "$remote_head" ]]; then
-    if git -C "$dest_path" merge-base --is-ancestor "$local_head" "$remote_head"; then
-      git -c core.hooksPath=/dev/null -C "$dest_path" merge --ff-only "$remote_head" --quiet
+    if run_git_child_or_propagate_signal -C "$dest_path" merge-base --is-ancestor "$local_head" "$remote_head"; then
+      run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" merge --ff-only "$remote_head" --quiet
     else
+      merge_base_rc=$?
+      [[ "$merge_base_rc" -eq 1 ]] || {
+        log_error "Unable to inspect existing-clone ancestry."
+        exit 1
+      }
       log_error "Existing clone does not exactly match origin/$TARGET_BRANCH and cannot be safely fast-forwarded."
       exit 1
     fi
   fi
-  [[ "$(git -C "$dest_path" rev-parse HEAD)" == "$(git -C "$dest_path" rev-parse "$remote_ref")" ]] || {
+  exact_local_head=''
+  exact_remote_head=''
+  capture_git_child_or_propagate_signal exact_local_head -C "$dest_path" rev-parse HEAD || {
+    log_error "Unable to resolve the synchronized clone head."
+    exit 1
+  }
+  capture_git_child_or_propagate_signal exact_remote_head -C "$dest_path" rev-parse "$remote_ref" || {
+    log_error "Unable to resolve the synchronized remote branch."
+    exit 1
+  }
+  [[ "$exact_local_head" == "$exact_remote_head" ]] || {
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
-  if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+  if ! capture_git_child_or_propagate_signal repository_status -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none; then
     log_error "Unable to inspect clone cleanliness after branch synchronization; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1385,17 +2282,21 @@ if [[ -d "$dest_path/.git" ]]; then
 else
   log_info "Cloning customer repository."
   trusted_template_dir="$(mktemp -d)"
-  if git -c core.hooksPath=/dev/null clone --template="$trusted_template_dir" --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"; then
-    :
+  if run_interruptible_child git -c core.hooksPath=/dev/null clone --template="$trusted_template_dir" --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"; then
+    clone_rc=0
   else
     clone_rc=$?
-    rm -rf -- "$trusted_template_dir"
-    exit "$clone_rc"
   fi
   rm -rf -- "$trusted_template_dir"
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+  if [[ "$clone_rc" -ne 0 ]]; then
+    exit "$clone_rc"
+  fi
 fi
 
-if ! repository_index="$(git -c core.fsmonitor=false -C "$dest_path" ls-files -v)"; then
+if ! capture_git_child_or_propagate_signal repository_index -c core.fsmonitor=false -C "$dest_path" ls-files -v; then
   log_error "Unable to inspect final clone index flags; refusing canonical onboarding readback."
   exit 1
 fi
@@ -1403,11 +2304,16 @@ if grep -Eq '^[a-zS]' <<<"$repository_index"; then
   log_error "Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
   exit 1
 fi
-if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
+repository_replace_refs=''
+if ! capture_git_child_or_propagate_signal repository_replace_refs -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/; then
+  log_error "Unable to inspect clone replacement refs; refusing canonical onboarding readback."
+  exit 1
+fi
+if [[ -n "$repository_replace_refs" ]]; then
   log_error "Clone has Git replacement refs; refusing canonical onboarding readback."
   exit 1
 fi
-if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+if ! capture_git_child_or_propagate_signal repository_status -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none; then
   log_error "Unable to inspect final clone cleanliness; refusing canonical onboarding readback."
   exit 1
 fi
@@ -1417,13 +2323,25 @@ if [[ -n "$repository_status" ]]; then
 fi
 validate_initialized_submodules "$dest_path" || exit 1
 
-git -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
+run_git_child_or_propagate_signal -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
   log_error "Clone did not produce the requested remote branch; tags cannot satisfy --target-branch."
   exit 1
 }
-repo_head="$(git -C "$dest_path" rev-parse HEAD)"
-repo_branch="$(git -C "$dest_path" branch --show-current)"
-remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
+repo_head=''
+repo_branch=''
+remote_head=''
+capture_git_child_or_propagate_signal repo_head -C "$dest_path" rev-parse HEAD || {
+  log_error "Unable to resolve clone HEAD during final canonical readback."
+  exit 1
+}
+capture_git_child_or_propagate_signal repo_branch -C "$dest_path" branch --show-current || {
+  log_error "Unable to resolve the checked-out branch during final canonical readback."
+  exit 1
+}
+capture_git_child_or_propagate_signal remote_head -C "$dest_path" rev-parse "$remote_ref" || {
+  log_error "Unable to resolve the remote branch during final canonical readback."
+  exit 1
+}
 [[ "$repo_branch" == "$TARGET_BRANCH" ]] || {
   log_error "Clone is not checked out on the requested branch."
   exit 1
@@ -1432,16 +2350,28 @@ remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
   log_error "Clone head is not exact to the requested remote branch."
   exit 1
 }
-repo_remote="$(git -C "$dest_path" remote get-url origin)"
+verify_origin_urls_exact "$dest_path" "$clone_url" "https://github.com/$TARGET_REPO" || {
+  log_error "Clone origin changed during checkout; fetch/push URL set is unexpected or credential-bearing; refusing canonical onboarding readback."
+  exit 1
+}
+repo_remote=''
+capture_git_child_or_propagate_signal repo_remote -C "$dest_path" remote get-url origin || {
+  log_error "Unable to resolve clone origin during final canonical readback."
+  exit 1
+}
 case "$repo_remote" in
   "$clone_url"|"https://github.com/$TARGET_REPO") ;;
   *) log_error "Clone origin changed during checkout; refusing canonical onboarding readback."; exit 1 ;;
 esac
 server_ref="refs/heads/$TARGET_BRANCH"
-server_ref_line="$(git ls-remote --exit-code "$clone_url" "$server_ref")" || {
+server_ref_line=""
+if capture_interruptible_child server_ref_line git ls-remote --exit-code "$clone_url" "$server_ref"; then
+  :
+else
+  stage0_child_rc=$?
   log_error "Unable to query the selected branch from the GitHub server for final canonical readback."
-  exit 1
-}
+  exit "$stage0_child_rc"
+fi
 if [[ "$server_ref_line" == *$'\n'* ]]; then
   log_error "GitHub server returned an ambiguous branch ref during final canonical readback."
   exit 1
@@ -1461,31 +2391,75 @@ printf 'path=%s\n' "$dest_path"
 
 if [[ -f "$dest_path/client/README.md" ]]; then log_ok "Customer client package found."; else log_warn "Target repository has no client/README.md; verify the selected channel."; fi
 
-cleanup_issue_smoke_test() {
-  if [[ -z "$SMOKE_ISSUE_REPO" || -z "$SMOKE_ISSUE_NUMBER" ]]; then return 0; fi
-  gh issue close "$SMOKE_ISSUE_NUMBER" --repo "$SMOKE_ISSUE_REPO" --comment 'Stage-0 cleanup closed the temporary smoke-test issue after an interrupted verification.' >/dev/null 2>&1 || true
-}
-
 run_issue_smoke_test() {
-  local issue_url issue_number
+  local issue_url="" issue_number="" child_rc=0 registration_rc=0
+  local previous_signal_defer="$SIGNAL_DEFER_EXIT"
+  local previous_child_signal_defer="${ACTIVE_CHILD_SIGNAL_DEFER:-0}"
   log_info "Creating sanitized temporary support-channel smoke-test issue."
-  issue_url="$(gh issue create --repo "$TARGET_REPO" --title '[pilot-smoke] Stage-0 issue channel verification' --body 'Automated Stage-0 support-channel smoke test. No customer evidence, credentials, secrets, keys, tokens or authorization data included.')"
-  issue_number="${issue_url##*/}"
-  [[ "$issue_number" =~ ^[0-9]+$ ]] || { log_error "Issue smoke test created an unparseable issue reference."; return 1; }
-  SMOKE_ISSUE_REPO="$TARGET_REPO"
-  SMOKE_ISSUE_NUMBER="$issue_number"
-  trap cleanup_issue_smoke_test EXIT
-  log_info "IssueSmokeTestIssue=$issue_number"
-  gh issue comment "$issue_number" --repo "$TARGET_REPO" --body 'Stage-0 issue comment path verified.' >/dev/null
-  gh issue view "$issue_number" --repo "$TARGET_REPO" --json number,state,title >/dev/null
-  gh issue close "$issue_number" --repo "$TARGET_REPO" --comment 'Stage-0 issue-channel smoke test completed successfully; no product incident.' >/dev/null
+
+  # Issue creation is registration-critical: once the request may have reached
+  # GitHub, keep both shell termination and signal forwarding to this specific
+  # child deferred until its result can be registered for EXIT cleanup.
+  SIGNAL_DEFER_EXIT=1
+  ACTIVE_CHILD_SIGNAL_DEFER=1
+
+  if capture_interruptible_child issue_url gh issue create --repo "$TARGET_REPO" --title '[pilot-smoke] Stage-0 issue channel verification' --body 'Automated Stage-0 support-channel smoke test. No customer evidence, credentials, secrets, keys, tokens or authorization data included.'; then
+    :
+  else
+    child_rc=$?
+  fi
+
+  if [[ -n "$issue_url" ]]; then
+    issue_number="${issue_url##*/}"
+    if [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+      SMOKE_ISSUE_REPO="$TARGET_REPO"
+      SMOKE_ISSUE_NUMBER="$issue_number"
+      log_info "IssueSmokeTestIssue=$issue_number"
+    elif [[ "$child_rc" -eq 0 ]]; then
+      log_error "Issue smoke test created an unparseable issue reference."
+      registration_rc=1
+    fi
+  elif [[ "$child_rc" -eq 0 ]]; then
+    log_error "Issue smoke test did not return a usable issue reference."
+    registration_rc=1
+  fi
+
+  # The cleanup handle is now durable in shell state. Restore the caller's
+  # child-forwarding and exit-defer modes before propagating the pending signal.
+  ACTIVE_CHILD_SIGNAL_DEFER="$previous_child_signal_defer"
+  SIGNAL_DEFER_EXIT="$previous_signal_defer"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    return "$PENDING_SIGNAL_STATUS"
+  fi
+  if [[ "$child_rc" -ne 0 ]]; then
+    return "$child_rc"
+  fi
+  if [[ "$registration_rc" -ne 0 ]]; then
+    return "$registration_rc"
+  fi
+
+  [[ -n "$SMOKE_ISSUE_NUMBER" ]] || {
+    log_error "Issue smoke test did not return a usable issue reference."
+    return 1
+  }
+
+  run_interruptible_child gh issue comment "$issue_number" --repo "$TARGET_REPO" --body 'Stage-0 issue comment path verified.' >/dev/null || return $?
+  run_interruptible_child gh issue view "$issue_number" --repo "$TARGET_REPO" --json number,state,title >/dev/null || return $?
+  run_interruptible_child gh issue close "$issue_number" --repo "$TARGET_REPO" --comment 'Stage-0 issue-channel smoke test completed successfully; no product incident.' >/dev/null || return $?
+
   SMOKE_ISSUE_REPO=""
   SMOKE_ISSUE_NUMBER=""
-  trap - EXIT
   log_ok "IssueSmokeTest=PASS issue=$issue_number"
 }
 
 if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
 
-log_info "Next: read the cloned customer documentation and follow only documented preflight/install steps."
+if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
+  verify_session_postconditions "$dest_path" || exit 1
+  finish_session_auth || { log_error "Unable to remove session-only GitHub authentication state."; exit 1; }
+fi
+
+log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
 log_ok "Stage-0 onboarding complete."
+
