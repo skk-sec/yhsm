@@ -2,6 +2,29 @@
 
 This small public package bootstraps repository access for an explicitly authorized YubiHSM pilot or evaluation. It is not an official Yubico repository and is not affiliated with or endorsed by Yubico.
 
+## Quick start
+
+Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
+
+```sh
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/eff68338084c979f52895619ce07d56151b898b4/bootstrap.sh && echo '6ce19f00e28b9c24244c97a5a6266e0f7aacdc44545861668d2e14f01e24dca1  bootstrap.sh' | sha256sum -c -
+```
+
+The expected result is:
+
+```text
+bootstrap.sh: OK
+```
+
+Only after that verification succeeds, run the separately downloaded file with Bash and the repository supplied for your authorized channel:
+
+```sh
+bash ./bootstrap.sh owner/repository --dry-run
+bash ./bootstrap.sh owner/repository
+```
+
+The download URL is bound to an immutable Public commit and the SHA-256 is bound to those exact `bootstrap.sh` bytes. Do not replace the immutable ref with `main`, do not skip the checksum verification, and do not pipe a download directly into a shell.
+
 ## Safe use
 
 Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host and always name the repository supplied for your authorized channel. A directly downloaded bootstrap file is not assumed to have an executable mode, so invoke it explicitly with Bash.
@@ -19,13 +42,7 @@ The positional `owner/repository` form is an explicit shorthand for `--target-re
 bash ./bootstrap.sh --private-target --target-repo owner/repository
 ```
 
-For a fresh system, the operator-facing delivery instruction should provide one pre-bound **download-and-verify** command that contains both an immutable Public Stage-0 ref and the expected SHA-256. The operator should not have to obtain, transcribe or compare a checksum separately. A delivery command follows this contract:
-
-```sh
-curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location 'https://raw.githubusercontent.com/skk-sec/yhsm/<immutable-ref>/bootstrap.sh' -o bootstrap.sh && printf '%s  %s\n' '<expected-sha256>' 'bootstrap.sh' | sha256sum -c -
-```
-
-`<immutable-ref>` and `<expected-sha256>` are release-bound values supplied together by the authorized delivery channel; do not replace the immutable ref with `main` and do not invent the checksum. Only after the command reports `bootstrap.sh: OK` is the separately downloaded file executed with Bash. Download/verification and execution therefore remain separate trust gates even though download plus SHA-256 verification is one operator action. Do not pipe a download directly into a shell.
+For a fresh system, the operator-facing delivery instruction must bind download and verification together so the operator does not need to obtain, transcribe or compare a checksum separately. A future Stage-0 release may shorten the URL further by publishing `bootstrap.sh` and its checksum as immutable release assets, but download, verification and execution remain separate trust gates.
 
 Private access uses GitHub Device/Web authentication. A working secure OS credential backend is preferred and remains supported. On a headless host where no usable Secret Service is available, Stage-0 may use an isolated session-only GitHub CLI configuration in a verified RAM-backed temporary directory. That session configuration is removed after success, failure or interruption and must not leave a plaintext token or credential helper in the normal user configuration or cloned repository. Token-bearing GitHub authentication environment variables remain rejected; do not put tokens, passwords, credentials, private keys or authorization data in arguments.
 
