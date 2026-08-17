@@ -37,6 +37,8 @@ PENDING_SIGNAL_STATUS=0
 PENDING_SIGNAL_NAME=""
 SIGNAL_DEFER_EXIT=0
 ACTIVE_CHILD_SIGNAL_DEFER=0
+ACTIVE_CHILD_SIGNAL_GROUP=0
+IGNORED_PATHS_RECORD=""
 
 sensitive_argv_key() {
   local key="$1"
@@ -418,13 +420,22 @@ resolve_direct_git_config_paths() {
   printf '%s\n%s\n' "$common_dir/config" "$git_dir/config.worktree"
 }
 
+make_cleanup_scoped_tempfile() {
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
+    [[ -n "$SESSION_ROOT" && -d "$SESSION_ROOT" && ! -L "$SESSION_ROOT" ]] || return 1
+    mktemp "$SESSION_ROOT/stage0-inspection.XXXXXX"
+    return
+  fi
+  mktemp
+}
+
 reject_direct_include_file() {
   local config_path="$1" required="$2" records errors rc
   if [[ ! -e "$config_path" && "$required" -eq 0 ]]; then return 0; fi
   [[ -f "$config_path" && ! -L "$config_path" ]] || return 1
-  records="$(mktemp)" || return 1
-  errors="$(mktemp)" || { rm -f -- "$records"; return 1; }
-  if git config --file "$config_path" --no-includes --null --name-only --get-regexp '^(include\.path|includeif\..*\.path)$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
+  records="$(make_cleanup_scoped_tempfile)" || return 1
+  errors="$(make_cleanup_scoped_tempfile)" || { rm -f -- "$records"; return 1; }
+  if run_git_child_or_propagate_signal config --file "$config_path" --no-includes --null --name-only --get-regexp '^(include\.path|includeif\..*\.path)$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
   if [[ "$rc" -eq 0 ]]; then
     rm -f -- "$records" "$errors"
     return 2
@@ -446,7 +457,8 @@ reject_direct_repo_includes() {
   reject_direct_include_file "$config_path" 1
   rc=$?
   [[ "$rc" -eq 0 ]] || return "$rc"
-  if worktree_enabled="$(git config --file "$config_path" --no-includes --type=bool --get extensions.worktreeConfig 2>/dev/null)"; then
+  worktree_enabled=''
+  if capture_git_child_or_propagate_signal worktree_enabled config --file "$config_path" --no-includes --type=bool --get extensions.worktreeConfig 2>/dev/null; then
     [[ "$worktree_enabled" == true || "$worktree_enabled" == false ]] || return 1
   else
     rc=$?
@@ -459,48 +471,53 @@ reject_direct_repo_includes() {
 }
 
 reject_direct_submodule_includes() {
-  local repo_path="$1" modules_file records errors rc entry submodule_path nested_repo repo_root nested_root
+  local repo_path="$1" modules_file records errors rc entry submodule_path nested_repo repo_root nested_root records_fd
   modules_file="$repo_path/.gitmodules"
   [[ -e "$modules_file" ]] || return 0
   [[ -f "$modules_file" && ! -L "$modules_file" ]] || return 1
-  records="$(mktemp)" || return 1
-  errors="$(mktemp)" || { rm -f -- "$records"; return 1; }
-  if git config --file "$modules_file" --no-includes --null --get-regexp '^submodule\..*\.path$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
+  records="$(make_cleanup_scoped_tempfile)" || return 1
+  errors="$(make_cleanup_scoped_tempfile)" || { rm -f -- "$records"; return 1; }
+  if run_git_child_or_propagate_signal config --file "$modules_file" --no-includes --null --get-regexp '^submodule\..*\.path$' >"$records" 2>"$errors"; then rc=0; else rc=$?; fi
   if [[ "$rc" -ne 0 && ( "$rc" -ne 1 || -s "$records" || -s "$errors" ) ]]; then
     rm -f -- "$records" "$errors"
     return 1
   fi
   repo_root="$(canonical_directory "$repo_path")" || { rm -f -- "$records" "$errors"; return 1; }
   if [[ "$rc" -eq 0 ]]; then
-    exec 3<"$records"
-    while IFS= read -r -d '' entry <&3; do
-      [[ "$entry" == *$'\n'* ]] || { exec 3<&-; rm -f -- "$records" "$errors"; return 1; }
+    exec {records_fd}<"$records" || { rm -f -- "$records" "$errors"; return 1; }
+    while IFS= read -r -d '' entry <&"$records_fd"; do
+      [[ "$entry" == *$'\n'* ]] || { exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1; }
       submodule_path="${entry#*$'\n'}"
       case "$submodule_path" in
-        ''|/*|..|../*|*/..|*/../*|*$'\n'*) exec 3<&-; rm -f -- "$records" "$errors"; return 1 ;;
+        ''|/*|..|../*|*/..|*/../*|*$'\n'*) exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1 ;;
       esac
       nested_repo="$repo_path/$submodule_path"
       if [[ -L "$nested_repo" ]]; then
-        exec 3<&-
+        exec {records_fd}<&-
         rm -f -- "$records" "$errors"
         return 3
       fi
       [[ -e "$nested_repo/.git" ]] || continue
-      nested_root="$(canonical_directory "$nested_repo")" || { exec 3<&-; rm -f -- "$records" "$errors"; return 1; }
-      case "$nested_root/" in "$repo_root/"*) ;; *) exec 3<&-; rm -f -- "$records" "$errors"; return 1 ;; esac
-      reject_direct_repo_includes "$nested_root" || { rc=$?; exec 3<&-; rm -f -- "$records" "$errors"; return "$rc"; }
-      reject_direct_submodule_includes "$nested_root" || { rc=$?; exec 3<&-; rm -f -- "$records" "$errors"; return "$rc"; }
+      nested_root="$(canonical_directory "$nested_repo")" || { exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1; }
+      if [[ "$nested_root" == "$repo_root" ]]; then
+        exec {records_fd}<&-
+        rm -f -- "$records" "$errors"
+        return 1
+      fi
+      case "$nested_root/" in "$repo_root/"*) ;; *) exec {records_fd}<&-; rm -f -- "$records" "$errors"; return 1 ;; esac
+      reject_direct_repo_includes "$nested_root" || { rc=$?; exec {records_fd}<&-; rm -f -- "$records" "$errors"; return "$rc"; }
+      reject_direct_submodule_includes "$nested_root" || { rc=$?; exec {records_fd}<&-; rm -f -- "$records" "$errors"; return "$rc"; }
     done
-    exec 3<&-
+    exec {records_fd}<&-
   fi
   rm -f -- "$records" "$errors"
 }
 
 reject_existing_clone_execution_config() {
-  local repo_path="$1" neutral_config config_records config_errors config_rc scope entry submodule_output direct_rc
+  local repo_path="$1" neutral_config config_records config_errors config_rc scope entry submodule_output direct_rc submodule_inspection_root
 
-  neutral_config="$(mktemp)" || return 1
-  if git config --file "$neutral_config" --no-includes --show-scope --get-regexp '^$' >/dev/null 2>&1; then
+  neutral_config="$(make_cleanup_scoped_tempfile)" || return 1
+  if run_git_child_or_propagate_signal config --file "$neutral_config" --no-includes --show-scope --get-regexp '^$' >/dev/null 2>&1; then
     rm -f -- "$neutral_config"
     log_error "Unable to probe Git configuration capability safely; refusing Stage-0 onboarding."
     return 1
@@ -536,9 +553,9 @@ reject_existing_clone_execution_config() {
     return 1
   fi
 
-  config_records="$(mktemp)"
-  config_errors="$(mktemp)"
-  if git -C "$repo_path" config --null --show-scope --includes --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
+  config_records="$(make_cleanup_scoped_tempfile)" || return 1
+  config_errors="$(make_cleanup_scoped_tempfile)" || { rm -f -- "$config_records"; return 1; }
+  if run_git_child_or_propagate_signal -C "$repo_path" config --null --show-scope --includes --get-regexp '^(filter\..*\.(clean|smudge|process)|credential(\..*)?\.helper|core\.worktree|http\..*|remote\..*\.(proxy|proxyAuthMethod))$' >"$config_records" 2>"$config_errors"; then
     config_rc=0
   else
     config_rc=$?
@@ -580,11 +597,32 @@ reject_existing_clone_execution_config() {
   fi
   rm -f -- "$config_records" "$config_errors"
 
-  if ! submodule_output="$(
-    git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+  submodule_inspection_root=''
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
+    if [[ -z "$SESSION_ROOT" || ! -d "$SESSION_ROOT" || -L "$SESSION_ROOT" ]]; then
+      log_error "Unable to bind initialized-submodule inspection files to the protected session root; refusing Stage-0 onboarding."
+      return 1
+    fi
+    submodule_inspection_root="$SESSION_ROOT"
+  fi
+  STAGE0_SUBMODULE_INSPECTION_ROOT="$submodule_inspection_root"
+  export STAGE0_SUBMODULE_INSPECTION_ROOT
+
+  # Nested submodule commands are intentionally literal until executed in the submodule context.
+  # shellcheck disable=SC2016
+  if ! capture_git_process_group_child_combined_or_propagate_signal submodule_output -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
       bash -c '\''
-        records="$(mktemp)" || exit 93
-        errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
+        if [[ -n "${STAGE0_SUBMODULE_INSPECTION_ROOT:-}" ]]; then
+          if [[ ! -d "$STAGE0_SUBMODULE_INSPECTION_ROOT" || -L "$STAGE0_SUBMODULE_INSPECTION_ROOT" ]]; then
+            printf "%s\\n" STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED
+            exit 93
+          fi
+          records="$(mktemp "$STAGE0_SUBMODULE_INSPECTION_ROOT/stage0-submodule-inspection.XXXXXX")" || exit 93
+          errors="$(mktemp "$STAGE0_SUBMODULE_INSPECTION_ROOT/stage0-submodule-inspection.XXXXXX")" || { rm -f -- "$records"; exit 93; }
+        else
+          records="$(mktemp)" || exit 93
+          errors="$(mktemp)" || { rm -f -- "$records"; exit 93; }
+        fi
         if git config --null --show-scope --includes --get-regexp "^(filter\\..*\\.(clean|smudge|process)|credential(\\..*)?\\.helper|core\\.worktree|http\\..*|remote\\..*\\.(proxy|proxyAuthMethod))$" >"$records" 2>"$errors"; then
           rc=0
         else
@@ -627,8 +665,8 @@ reject_existing_clone_execution_config() {
         fi
         rm -f -- "$records" "$errors"
       '\''
-    ' 2>&1
-  )"; then
+    '; then
+    unset STAGE0_SUBMODULE_INSPECTION_ROOT
     if [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG_INSPECTION_FAILED"* ]]; then
       log_error "Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding."
     elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_EXECUTION_CONFIG"* ]]; then
@@ -638,6 +676,7 @@ reject_existing_clone_execution_config() {
     fi
     return 1
   fi
+  unset STAGE0_SUBMODULE_INSPECTION_ROOT
 }
 
 if [[ ! -r /etc/os-release ]]; then
@@ -1557,7 +1596,11 @@ forward_termination_signal() {
 
   if [[ -n "$pid" ]]; then
     if [[ "$pid" =~ ^[0-9]+$ && "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 0 ]]; then
-      kill -s "$signal_name" "$pid" 2>/dev/null || true
+      if [[ "${ACTIVE_CHILD_SIGNAL_GROUP:-0}" -eq 1 ]]; then
+        kill -s "$signal_name" -- "-$pid" 2>/dev/null || true
+      else
+        kill -s "$signal_name" "$pid" 2>/dev/null || true
+      fi
     fi
     return 0
   fi
@@ -1616,6 +1659,76 @@ run_interruptible_child() {
   return "$rc"
 }
 
+run_interruptible_process_group_child() {
+  local rc child_pid attempt group_ready=0
+
+  command -v setsid >/dev/null 2>&1 || return 127
+  ACTIVE_CHILD_SIGNAL_GROUP=1
+  ACTIVE_CHILD_PID="pending"
+  (
+    trap - HUP INT TERM
+    exec setsid "$@"
+  ) &
+  child_pid=$!
+
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    if kill -0 -- "-$child_pid" 2>/dev/null; then
+      group_ready=1
+      break
+    fi
+    kill -0 "$child_pid" 2>/dev/null || break
+    sleep 0.01
+  done
+
+  if [[ "$group_ready" -ne 1 ]]; then
+    if kill -0 "$child_pid" 2>/dev/null; then
+      kill -s TERM "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+      rc=127
+    elif wait "$child_pid"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_SIGNAL_GROUP=0
+    if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+      return "$PENDING_SIGNAL_STATUS"
+    fi
+    return "$rc"
+  fi
+
+  ACTIVE_CHILD_PID="$child_pid"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    kill -s "${PENDING_SIGNAL_NAME:-TERM}" -- "-$child_pid" 2>/dev/null || true
+  fi
+
+  while true; do
+    if wait "$child_pid"; then
+      rc=0
+      break
+    else
+      rc=$?
+    fi
+
+    if kill -0 "$child_pid" 2>/dev/null; then
+      if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+        kill -s "${PENDING_SIGNAL_NAME:-TERM}" -- "-$child_pid" 2>/dev/null || true
+      fi
+      continue
+    fi
+    break
+  done
+
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_SIGNAL_GROUP=0
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    return "$PENDING_SIGNAL_STATUS"
+  fi
+  return "$rc"
+}
+
 capture_interruptible_child() {
   local output_name="$1" capture_root capture_file rc output
   shift
@@ -1643,11 +1756,119 @@ capture_interruptible_child() {
   return "$rc"
 }
 
+run_git_child_or_propagate_signal() {
+  local rc
+
+  if run_interruptible_child git "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+
+capture_git_child_or_propagate_signal() {
+  local output_name="$1" rc
+  shift
+
+  if capture_interruptible_child "$output_name" git "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+capture_git_child_combined_or_propagate_signal() {
+  local output_name="$1" capture_root capture_file rc output
+  shift
+
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    capture_root="$SESSION_ROOT"
+  else
+    capture_root="${TMPDIR:-/tmp}"
+  fi
+
+  capture_file="$(mktemp "$capture_root/yhsm-stage0-git-output.XXXXXX")" || return 1
+
+  if run_interruptible_child git "$@" >"$capture_file" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  output="$(cat -- "$capture_file")" || {
+    rm -f -- "$capture_file"
+    return 1
+  }
+  printf -v "$output_name" '%s' "$output"
+  rm -f -- "$capture_file"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
+capture_git_process_group_child_combined_or_propagate_signal() {
+  local output_name="$1" capture_root capture_file rc output
+  shift
+
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    capture_root="$SESSION_ROOT"
+  else
+    capture_root="${TMPDIR:-/tmp}"
+  fi
+
+  capture_file="$(mktemp "$capture_root/yhsm-stage0-git-output.XXXXXX")" || return 1
+
+  if run_interruptible_process_group_child git "$@" >"$capture_file" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  output="$(cat -- "$capture_file")" || {
+    rm -f -- "$capture_file"
+    return 1
+  }
+  printf -v "$output_name" '%s' "$output"
+  rm -f -- "$capture_file"
+
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+
+  return "$rc"
+}
+
 cleanup_issue_smoke_test() {
   if [[ -z "$SMOKE_ISSUE_REPO" || -z "$SMOKE_ISSUE_NUMBER" ]]; then return 0; fi
   gh issue close "$SMOKE_ISSUE_NUMBER" --repo "$SMOKE_ISSUE_REPO" --comment 'Stage-0 cleanup closed the temporary smoke-test issue after an interrupted verification.' >/dev/null 2>&1 || true
   SMOKE_ISSUE_REPO=""
   SMOKE_ISSUE_NUMBER=""
+}
+
+cleanup_ignored_paths_record() {
+  local path="$IGNORED_PATHS_RECORD"
+  [[ -n "$path" ]] || return 0
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    rm -f -- "$path" || return 1
+  fi
+  IGNORED_PATHS_RECORD=""
 }
 
 cleanup_session_auth_best_effort() {
@@ -1669,6 +1890,7 @@ cleanup_stage0() {
   local rc=$?
   if [[ "$CLEANUP_ACTIVE" -eq 1 ]]; then return "$rc"; fi
   CLEANUP_ACTIVE=1
+  cleanup_ignored_paths_record || true
   cleanup_issue_smoke_test || true
   cleanup_session_auth_best_effort || true
   CLEANUP_ACTIVE=0
@@ -1720,7 +1942,7 @@ verify_direct_repo_has_no_credential_helper() {
   [[ "${#paths[@]}" -eq 2 ]] || return 1
   for config_path in "${paths[@]}"; do
     [[ -e "$config_path" ]] || continue
-    if git config --file "$config_path" --no-includes --get-regexp '^credential(\..*)?\.helper$' >/dev/null 2>&1; then
+    if run_git_child_or_propagate_signal config --file "$config_path" --no-includes --get-regexp '^credential(\..*)?\.helper$' >/dev/null 2>&1; then
       return 1
     else
       rc=$?
@@ -1743,7 +1965,8 @@ verify_raw_origin_urls_exact() {
     [[ -f "$config_path" && ! -L "$config_path" ]] || return 1
 
     for key in remote.origin.url remote.origin.pushurl; do
-      if raw_values="$(git config --file "$config_path" --no-includes --get-all "$key" 2>/dev/null)"; then
+      raw_values=''
+      if capture_git_child_or_propagate_signal raw_values config --file "$config_path" --no-includes --get-all "$key" 2>/dev/null; then
         [[ -n "$raw_values" ]] || return 1
 
         while IFS= read -r url; do
@@ -1773,18 +1996,20 @@ verify_raw_origin_urls_exact() {
 }
 
 verify_origin_urls_exact() {
-  local repo_path="$1" expected_url_1="$2" expected_url_2="$3" output url kind
+  local repo_path="$1" expected_url_1="$2" expected_url_2="$3" origin_urls url kind
 
   verify_raw_origin_urls_exact "$repo_path" "$expected_url_1" "$expected_url_2" || return 1
 
   for kind in fetch push; do
     if [[ "$kind" == "fetch" ]]; then
-      output="$(git -C "$repo_path" remote get-url --all origin 2>/dev/null)" || return 1
+      origin_urls=''
+      capture_git_child_or_propagate_signal origin_urls -C "$repo_path" remote get-url --all origin 2>/dev/null || return 1
     else
-      output="$(git -C "$repo_path" remote get-url --push --all origin 2>/dev/null)" || return 1
+      origin_urls=''
+      capture_git_child_or_propagate_signal origin_urls -C "$repo_path" remote get-url --push --all origin 2>/dev/null || return 1
     fi
 
-    [[ -n "$output" ]] || return 1
+    [[ -n "$origin_urls" ]] || return 1
     while IFS= read -r url; do
       [[ -n "$url" ]] || return 1
       if [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/@]+@ ]]; then
@@ -1794,7 +2019,7 @@ verify_origin_urls_exact() {
         "$expected_url_1"|"$expected_url_2") ;;
         *) return 1 ;;
       esac
-    done <<<"$output"
+    done <<<"$origin_urls"
   done
 }
 
@@ -1861,8 +2086,9 @@ fi
 
 validate_initialized_submodules() {
   local repo_path="$1" submodule_output
-  if ! submodule_output="$(
-    git -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
+  # Nested submodule commands are intentionally literal until executed in the submodule context.
+  # shellcheck disable=SC2016
+  if ! capture_git_process_group_child_combined_or_propagate_signal submodule_output -c core.hooksPath=/dev/null -C "$repo_path" submodule foreach --quiet --recursive '
       submodule_replace_refs="$(git for-each-ref --format="%(refname)" refs/replace/)" || {
         printf "%s\n" STAGE0_SUBMODULE_INSPECTION_FAILED
         exit 93
@@ -1892,8 +2118,7 @@ validate_initialized_submodules() {
         printf "%s\n" STAGE0_SUBMODULE_DIRTY
         exit 92
       fi
-    ' 2>&1
-  )"; then
+    '; then
     if [[ "$submodule_output" == *"STAGE0_SUBMODULE_REPLACE_REF"* ]]; then
       log_error "An initialized submodule has Git replacement refs; refusing canonical onboarding readback."
     elif [[ "$submodule_output" == *"STAGE0_SUBMODULE_HIDDEN_INDEX"* ]]; then
@@ -1915,6 +2140,9 @@ if [[ -e "$dest_path" && ! -e "$dest_path/.git" ]]; then
 fi
 
 remote_ref="refs/remotes/origin/$TARGET_BRANCH"
+repository_index=''
+repository_status=''
+repository_replace_refs=''
 
 if [[ -e "$dest_path/.git" ]]; then
   reject_existing_clone_execution_config "$dest_path" || exit 1
@@ -1922,11 +2150,17 @@ if [[ -e "$dest_path/.git" ]]; then
     log_error "Existing clone has an unexpected or credential-bearing origin fetch/push URL."
     exit 1
   }
-  if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
+  repository_replace_refs=''
+  if ! capture_git_child_or_propagate_signal repository_replace_refs -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/; then
+    log_error "Unable to inspect existing clone replacement refs; refusing canonical onboarding readback."
+    exit 1
+  fi
+  if [[ -n "$repository_replace_refs" ]]; then
     log_error "Existing clone has Git replacement refs; refusing canonical onboarding readback."
     exit 1
   fi
-  if ! repository_index="$(git -c core.fsmonitor=false -C "$dest_path" ls-files -v)"; then
+  repository_index=''
+  if ! capture_git_child_or_propagate_signal repository_index -c core.fsmonitor=false -C "$dest_path" ls-files -v; then
     log_error "Unable to inspect existing clone index flags; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1934,7 +2168,7 @@ if [[ -e "$dest_path/.git" ]]; then
     log_error "Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
     exit 1
   fi
-  if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+  if ! capture_git_child_or_propagate_signal repository_status -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none; then
     log_error "Unable to inspect existing clone cleanliness; refusing to modify or report it as canonical."
     exit 1
   fi
@@ -1944,40 +2178,99 @@ if [[ -e "$dest_path/.git" ]]; then
   fi
   validate_initialized_submodules "$dest_path" || exit 1
   log_info "Existing clean clone found; fetching exact remote branch."
-  run_interruptible_child git -c core.hooksPath=/dev/null -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
-  remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
+  run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --quiet
+  remote_head=''
+  if ! capture_git_child_or_propagate_signal remote_head -C "$dest_path" rev-parse "$remote_ref"; then
+    log_error "Unable to resolve the fetched remote branch."
+    exit 1
+  fi
+  ignored_paths_root="${TMPDIR:-/tmp}"
+  if [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" ]]; then
+    ignored_paths_root="$SESSION_ROOT"
+  fi
+  if ! IGNORED_PATHS_RECORD="$(mktemp "$ignored_paths_root/yhsm-stage0-ignored-paths.XXXXXX")"; then
+    log_error "Unable to create the ignored-file inspection record."
+    exit 1
+  fi
+  [[ -f "$IGNORED_PATHS_RECORD" && ! -L "$IGNORED_PATHS_RECORD" ]] || {
+    log_error "Ignored-file inspection record is not a regular file."
+    exit 1
+  }
+  if ! run_git_child_or_propagate_signal -c core.fsmonitor=false -C "$dest_path" ls-files --others --ignored --exclude-standard -z >"$IGNORED_PATHS_RECORD"; then
+    log_error "Unable to inspect ignored files in the existing clone."
+    exit 1
+  fi
   ignored_collision=0
   while IFS= read -r -d '' ignored_path; do
-    if git -C "$dest_path" cat-file -e "$remote_head:$ignored_path" 2>/dev/null; then
+    ignored_remote_match=''
+    if ! capture_git_child_or_propagate_signal ignored_remote_match --literal-pathspecs -C "$dest_path" ls-tree -r --name-only "$remote_head" -- "$ignored_path"; then
+      log_error "Unable to inspect an ignored-file collision against the selected remote branch."
+      exit 1
+    fi
+    if [[ -n "$ignored_remote_match" ]]; then
       ignored_collision=1
       break
     fi
-  done < <(git -c core.fsmonitor=false -C "$dest_path" ls-files --others --ignored --exclude-standard -z)
+  done <"$IGNORED_PATHS_RECORD"
+  cleanup_ignored_paths_record || {
+    log_error "Unable to remove the ignored-file inspection record."
+    exit 1
+  }
   if [[ "$ignored_collision" -eq 1 ]]; then
     log_error "Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state."
     exit 1
   fi
-  if git -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
-    git -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
+  if run_git_child_or_propagate_signal -C "$dest_path" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
+    run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore "$TARGET_BRANCH" --quiet
   else
-    git -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
-    git -C "$dest_path" config "branch.$TARGET_BRANCH.remote" origin
-    git -C "$dest_path" config "branch.$TARGET_BRANCH.merge" "refs/heads/$TARGET_BRANCH"
+    branch_ref_rc=$?
+    [[ "$branch_ref_rc" -eq 1 ]] || {
+      log_error "Unable to inspect the selected local branch ref."
+      exit 1
+    }
+    run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" checkout --no-overwrite-ignore -b "$TARGET_BRANCH" "$remote_head" --quiet
+    run_git_child_or_propagate_signal -C "$dest_path" config "branch.$TARGET_BRANCH.remote" origin || {
+      log_error "Unable to configure the selected local branch remote."
+      exit 1
+    }
+    run_git_child_or_propagate_signal -C "$dest_path" config "branch.$TARGET_BRANCH.merge" "refs/heads/$TARGET_BRANCH" || {
+      log_error "Unable to configure the selected local branch merge ref."
+      exit 1
+    }
   fi
-  local_head="$(git -C "$dest_path" rev-parse HEAD)"
+  local_head=''
+  if ! capture_git_child_or_propagate_signal local_head -C "$dest_path" rev-parse HEAD; then
+    log_error "Unable to resolve the existing clone head."
+    exit 1
+  fi
   if [[ "$local_head" != "$remote_head" ]]; then
-    if git -C "$dest_path" merge-base --is-ancestor "$local_head" "$remote_head"; then
-      git -c core.hooksPath=/dev/null -C "$dest_path" merge --ff-only "$remote_head" --quiet
+    if run_git_child_or_propagate_signal -C "$dest_path" merge-base --is-ancestor "$local_head" "$remote_head"; then
+      run_git_child_or_propagate_signal -c core.hooksPath=/dev/null -C "$dest_path" merge --ff-only "$remote_head" --quiet
     else
+      merge_base_rc=$?
+      [[ "$merge_base_rc" -eq 1 ]] || {
+        log_error "Unable to inspect existing-clone ancestry."
+        exit 1
+      }
       log_error "Existing clone does not exactly match origin/$TARGET_BRANCH and cannot be safely fast-forwarded."
       exit 1
     fi
   fi
-  [[ "$(git -C "$dest_path" rev-parse HEAD)" == "$(git -C "$dest_path" rev-parse "$remote_ref")" ]] || {
+  exact_local_head=''
+  exact_remote_head=''
+  capture_git_child_or_propagate_signal exact_local_head -C "$dest_path" rev-parse HEAD || {
+    log_error "Unable to resolve the synchronized clone head."
+    exit 1
+  }
+  capture_git_child_or_propagate_signal exact_remote_head -C "$dest_path" rev-parse "$remote_ref" || {
+    log_error "Unable to resolve the synchronized remote branch."
+    exit 1
+  }
+  [[ "$exact_local_head" == "$exact_remote_head" ]] || {
     log_error "Existing clone is not exact to the fetched remote branch."
     exit 1
   }
-  if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+  if ! capture_git_child_or_propagate_signal repository_status -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none; then
     log_error "Unable to inspect clone cleanliness after branch synchronization; refusing canonical onboarding readback."
     exit 1
   fi
@@ -1990,16 +2283,20 @@ else
   log_info "Cloning customer repository."
   trusted_template_dir="$(mktemp -d)"
   if run_interruptible_child git -c core.hooksPath=/dev/null clone --template="$trusted_template_dir" --branch "$TARGET_BRANCH" --single-branch "$clone_url" "$dest_path"; then
-    :
+    clone_rc=0
   else
     clone_rc=$?
-    rm -rf -- "$trusted_template_dir"
-    exit "$clone_rc"
   fi
   rm -rf -- "$trusted_template_dir"
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+  fi
+  if [[ "$clone_rc" -ne 0 ]]; then
+    exit "$clone_rc"
+  fi
 fi
 
-if ! repository_index="$(git -c core.fsmonitor=false -C "$dest_path" ls-files -v)"; then
+if ! capture_git_child_or_propagate_signal repository_index -c core.fsmonitor=false -C "$dest_path" ls-files -v; then
   log_error "Unable to inspect final clone index flags; refusing canonical onboarding readback."
   exit 1
 fi
@@ -2007,11 +2304,16 @@ if grep -Eq '^[a-zS]' <<<"$repository_index"; then
   log_error "Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback."
   exit 1
 fi
-if [[ -n "$(git -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/)" ]]; then
+repository_replace_refs=''
+if ! capture_git_child_or_propagate_signal repository_replace_refs -C "$dest_path" for-each-ref --format='%(refname)' refs/replace/; then
+  log_error "Unable to inspect clone replacement refs; refusing canonical onboarding readback."
+  exit 1
+fi
+if [[ -n "$repository_replace_refs" ]]; then
   log_error "Clone has Git replacement refs; refusing canonical onboarding readback."
   exit 1
 fi
-if ! repository_status="$(git -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+if ! capture_git_child_or_propagate_signal repository_status -c core.fsmonitor=false -C "$dest_path" status --porcelain --untracked-files=all --ignore-submodules=none; then
   log_error "Unable to inspect final clone cleanliness; refusing canonical onboarding readback."
   exit 1
 fi
@@ -2021,13 +2323,25 @@ if [[ -n "$repository_status" ]]; then
 fi
 validate_initialized_submodules "$dest_path" || exit 1
 
-git -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
+run_git_child_or_propagate_signal -C "$dest_path" show-ref --verify --quiet "$remote_ref" || {
   log_error "Clone did not produce the requested remote branch; tags cannot satisfy --target-branch."
   exit 1
 }
-repo_head="$(git -C "$dest_path" rev-parse HEAD)"
-repo_branch="$(git -C "$dest_path" branch --show-current)"
-remote_head="$(git -C "$dest_path" rev-parse "$remote_ref")"
+repo_head=''
+repo_branch=''
+remote_head=''
+capture_git_child_or_propagate_signal repo_head -C "$dest_path" rev-parse HEAD || {
+  log_error "Unable to resolve clone HEAD during final canonical readback."
+  exit 1
+}
+capture_git_child_or_propagate_signal repo_branch -C "$dest_path" branch --show-current || {
+  log_error "Unable to resolve the checked-out branch during final canonical readback."
+  exit 1
+}
+capture_git_child_or_propagate_signal remote_head -C "$dest_path" rev-parse "$remote_ref" || {
+  log_error "Unable to resolve the remote branch during final canonical readback."
+  exit 1
+}
 [[ "$repo_branch" == "$TARGET_BRANCH" ]] || {
   log_error "Clone is not checked out on the requested branch."
   exit 1
@@ -2040,7 +2354,11 @@ verify_origin_urls_exact "$dest_path" "$clone_url" "https://github.com/$TARGET_R
   log_error "Clone origin changed during checkout; fetch/push URL set is unexpected or credential-bearing; refusing canonical onboarding readback."
   exit 1
 }
-repo_remote="$(git -C "$dest_path" remote get-url origin)"
+repo_remote=''
+capture_git_child_or_propagate_signal repo_remote -C "$dest_path" remote get-url origin || {
+  log_error "Unable to resolve clone origin during final canonical readback."
+  exit 1
+}
 case "$repo_remote" in
   "$clone_url"|"https://github.com/$TARGET_REPO") ;;
   *) log_error "Clone origin changed during checkout; refusing canonical onboarding readback."; exit 1 ;;
@@ -2144,3 +2462,4 @@ fi
 
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
 log_ok "Stage-0 onboarding complete."
+
