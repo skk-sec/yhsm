@@ -39,10 +39,10 @@ jobs:
           readme = Path("README.md").read_text(encoding="utf-8")
           bootstrap = Path("bootstrap.sh").read_bytes()
           pattern = re.compile(
-              r"curl -fsSLo bootstrap\\.sh "
-              r"https://raw\\.githubusercontent\\.com/skk-sec/yhsm/"
-              r"(?P<ref>[0-9a-f]{40})/bootstrap\\.sh && echo "
-              r"'(?P<sha>[0-9a-f]{64})  bootstrap\\.sh' \\| sha256sum -c -"
+              r"curl -fsSLo bootstrap\.sh "
+              r"https://raw\.githubusercontent\.com/skk-sec/yhsm/"
+              r"(?P<ref>[0-9a-f]{40})/bootstrap\.sh && echo "
+              r"'(?P<sha>[0-9a-f]{64})  bootstrap\.sh' \| sha256sum -c -"
           )
           matches = list(pattern.finditer(readme))
           if len(matches) != 1:
