@@ -40,11 +40,7 @@ The normal path derives the local DNS search domain and reads `_pki.<domain>` TX
 
 Only after that target is resolved does GitHub Device/Web authentication run. GitHub is used solely to verify repository and issue-read access to the exact DNS-bound target. Stage-0 never enumerates or selects repositories from the general GitHub account.
 
-Only an absent TXT response may use the separately maintained `/etc/yhsm/stage0-account-channels` file with exactly one valid entry for the local OS account. A malformed, ambiguous, incomplete or unavailable DNS binding stops with `HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED`; it never falls back to that map. Each non-comment entry uses `account=<local-account> repo=<owner/repository> release_channel=<token> lab_mode=1`; this local map is only the fallback for a successful DNS NODATA/NXDOMAIN result. DNS transport or server errors never use the map. `--target-repo` is recovery-only:
-
-```sh
-bash ./bootstrap.sh --private-target --target-repo owner/repository
-```
+Only an absent TXT response may use the separately maintained `/etc/yhsm/stage0-account-channels` file with exactly one valid entry for the local OS account. A malformed, ambiguous, incomplete or unavailable DNS binding stops with `HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED`; it never falls back to that map. Each non-comment entry uses `account=<local-account> repo=<owner/repository> release_channel=<token> lab_mode=1`; this local map is only the fallback for a successful DNS NODATA/NXDOMAIN result. DNS transport or server errors never use the map. `--target-repo` exists only as a separately authorized recovery override. It is never part of the normal customer path, and this guide deliberately embeds no repository value.
 
 For a fresh system, the operator-facing delivery instruction must bind download and verification together so the operator does not need to obtain, transcribe or compare a checksum separately. The immutable commit and SHA-256 above are the maintained Stage-0 download reference. Any newer qualified bootstrap must update this pin and its checksum together before it is published; download, verification and execution remain separate trust gates.
 
