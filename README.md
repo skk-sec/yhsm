@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/1d4ef42cdcc83f07465c9ffd3707989e9daf736a/bootstrap.sh && echo 'd47fd50d69918e877237e2399202c186991195d27eb232897314047f368d0e6e  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3ddf5e32ac83283a744828fe42282e91788ec4ee/bootstrap.sh && echo '36f5f7d945f0255774b43c14f5d88b8015e31dc7c338d027e570886770c01bb8  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
