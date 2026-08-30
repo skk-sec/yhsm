@@ -16,22 +16,36 @@ The expected result is:
 bootstrap.sh: OK
 ```
 
-Only after that verification succeeds, run the separately downloaded file with Bash and the exact repository supplied by your authorized channel instruction:
+The normal customer-independent entry is parameterless:
 
 ```sh
-bash ./bootstrap.sh <authorized-owner>/<authorized-repository> --dry-run
-bash ./bootstrap.sh <authorized-owner>/<authorized-repository>
+bash ./bootstrap.sh --dry-run
+bash ./bootstrap.sh
 ```
 
-`owner/repository` is documentation syntax only. Do not execute it literally. The `--dry-run` prints the plan but does not prove that the target repository exists or that your account can access it. If the channel instruction does not provide an explicit authorized target, stop and obtain the channel binding; do not guess a repository. The bootstrap script rejects the common documentation placeholders before package installation or GitHub authentication.
+Stage 0 resolves the customer channel before cloning:
+
+1. DNS-first derives the local DNS search domain and reads the TXT contract at `_pki.<domain>`.
+2. The record must be unambiguous and contain valid `repo`, `release_channel` and `lab_mode` fields.
+3. GitHub Device/Web authentication verifies read access to that already DNS-bound repository; GitHub access is never used to enumerate or guess customer repositories.
+4. If DNS is missing or invalid, a separately maintained unique account-to-channel mapping may be used after authentication. Multiple or missing mappings fail closed.
+5. If no safe automatic binding exists, the script stops with a sanitized unresolved-target result and requests an explicit override.
+
+DNS is discovery and environment binding only; it is not authorization and must not contain secrets.
+
+The explicit override is available for diagnostics or a separately authorized exception:
+
+```sh
+bash ./bootstrap.sh --target-repo <authorized-owner>/<authorized-repository> --dry-run
+bash ./bootstrap.sh --target-repo <authorized-owner>/<authorized-repository>
+```
+
+The literal forms `owner/repository` and `owner/bues` are documentation placeholders and negative tests. Do not execute them literally. The script rejects common placeholders before package installation or GitHub authentication.
+
+Stage 0 is release-neutral. It does not select, install or infer a product release. Release selection is a later channel-specific step based on a live qualified binding; a moving `latest`, a snapshot or chat history is not a release selector.
 
 The download URL is bound to an immutable Public commit and the SHA-256 is bound to those exact `bootstrap.sh` bytes. Do not replace the immutable ref with `main`, do not skip the checksum verification, and do not pipe a download directly into a shell.
 
-## Release selection and BUES/GEV channel rule
-
-Stage 0 is release-neutral. After the authorized channel has been established, resolve the current qualified release live from that channel and bind it to its exact version, commit, manifest and asset SHA-256 values. Never reuse a release from memory, a snapshot or a moving `latest` label.
-
-BUES and GEV are separate channels and may have different current qualified releases. Equality is required only when the operation explicitly declares a byte-identical BUES→GEV mirror or promotion. In that case, compare the exact version, source binding, manifest and asset hashes before proceeding.
 ## Safe use
 
 Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host and always name the repository supplied for your authorized channel. A directly downloaded bootstrap file is not assumed to have an executable mode, so invoke it explicitly with Bash.
