@@ -67,6 +67,17 @@ valid_target_branch() {
   return 0
 }
 
+reject_documentation_placeholder_target() {
+  local repo="${1,,}"
+  case "$repo" in
+    owner/repository|owner/repo|example-org/pilot-repository)
+      log_error "Documentation placeholder target '$1' is not valid; use the explicitly authorized repository."
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 authorization_scheme_marker() {
   local lower="${1,,}"
   [[ "$lower" =~ ^[[:space:]]*(basic|bearer|digest|negotiate|ntlm)[[:space:]]*$ || "$lower" =~ ^[[:space:]]*(proxy-)?authorization:[[:space:]]*(basic|bearer|digest|negotiate|ntlm)[[:space:]]*$ ]]
@@ -304,6 +315,7 @@ done
   exit 2
 }
 [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log_error "Invalid --target-repo."; exit 2; }
+reject_documentation_placeholder_target "$TARGET_REPO" || exit 2
 if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
   log_error "--target-repo contains a sensitive-shaped value and is rejected."
   exit 2
