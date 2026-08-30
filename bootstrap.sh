@@ -5,8 +5,12 @@ DEFAULT_TARGET_BRANCH="main"
 DEFAULT_WORKDIR="${HOME}/git"
 GH_KEYRING_URL="https://cli.github.com/packages/githubcli-archive-keyring.gpg"
 GH_KEYRING_SHA256="6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b"
+ACCOUNT_CHANNEL_MAP="/etc/yhsm/stage0-account-channels"
 
 TARGET_REPO=""
+RELEASE_CHANNEL=""
+LAB_MODE=""
+TARGET_RESOLUTION=""
 TARGET_BRANCH="$DEFAULT_TARGET_BRANCH"
 WORKDIR="$DEFAULT_WORKDIR"
 TARGET_VISIBILITY="private"
@@ -17,6 +21,9 @@ SMOKE_ISSUE_NUMBER=""
 SESSION_AUTH_ACTIVE=0
 SESSION_ROOT=""
 SESSION_PARENT=""
+# Compatibility markers for the Stage-0 handoff candidate contract.
+STAGE0_HANDOFF_CANDIDATE_FILE=""
+STAGE0_HANDOFF_CANDIDATE_ROOT=""
 CLEANUP_ACTIVE=0
 ORIGINAL_HOME=""
 ORIGINAL_XDG_CONFIG_HOME_SET=0
@@ -65,6 +72,243 @@ valid_target_branch() {
   [[ "$branch" != *. && "$branch" != *./* ]] || return 1
   [[ "$branch" != *.lock && "$branch" != *.lock/* ]] || return 1
   return 0
+}
+
+valid_target_repo() {
+  local repo="$1" owner name
+  [[ "$repo" == */* && "$repo" != */*/* ]] || return 1
+  owner="${repo%%/*}"
+  name="${repo##*/}"
+  [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,38}$ ]] || return 1
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || return 1
+  [[ "$owner" != *..* && "$name" != *..* ]] || return 1
+}
+
+canonical_target_repo() {
+  local repo="$1" require_canonical_url="${2:-0}"
+  if [[ "$repo" =~ ^https://github\.com/([A-Za-z0-9][A-Za-z0-9.-]{0,38})/([A-Za-z0-9][A-Za-z0-9._-]{0,99})$ ]]; then
+    repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  elif [[ "$require_canonical_url" -eq 1 ]]; then
+    return 1
+  fi
+  valid_target_repo "$repo" || return 1
+  printf '%s\n' "$repo"
+}
+valid_release_channel() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+}
+
+parse_channel_binding() {
+  local payload="$1" expected_account="${2:-}" require_canonical_url="${3:-0}" token key value
+  local repo="" release_channel="" lab_mode="" account="" seen_keys=""
+  local semicolon_mode=0
+  local -a tokens=()
+
+  [[ -n "$payload" && "$payload" != *$'\n'* && "$payload" != *$'\r'* ]] || return 1
+  if [[ "$payload" == *';'* ]]; then
+    semicolon_mode=1
+    [[ "$payload" == *';' ]] || return 1
+    payload="${payload%;}"
+    [[ -n "$payload" && "$payload" != *';;'* ]] || return 1
+    IFS=';' read -r -a tokens <<<"$payload"
+  else
+    read -r -a tokens <<<"$payload"
+  fi
+  [[ "${#tokens[@]}" -ge 3 ]] || return 1
+  for token in "${tokens[@]}"; do
+    [[ "$token" == *=* ]] || return 1
+    if [[ "$semicolon_mode" -eq 1 ]]; then
+      [[ "$token" != *[[:space:]]* ]] || return 1
+    fi
+    key="${token%%=*}"
+    value="${token#*=}"
+    [[ -n "$value" && "$value" != *=* && "$value" != *';'* ]] || return 1
+    case " $seen_keys " in
+      *" $key "*) return 1 ;;
+    esac
+    seen_keys+=" $key"
+    case "$key" in
+      schema)
+        [[ "$semicolon_mode" -eq 1 && "$value" == 1 ]] || return 1
+        ;;
+      base|tenant|connector|ad_publish_host|ca_uca|ca_mca|ca_sca|secrets_backend)
+        [[ "$semicolon_mode" -eq 1 ]] || return 1
+        ;;
+      repo)
+        repo="$(canonical_target_repo "$value" "$require_canonical_url")" || return 1
+        ;;
+      release_channel)
+        release_channel="$value"
+        ;;
+      lab_mode)
+        lab_mode="$value"
+        ;;
+      account)
+        [[ -n "$expected_account" ]] || return 1
+        account="$value"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  if [[ "$semicolon_mode" -eq 1 ]]; then
+    [[ " $seen_keys " == *" schema "* ]] || return 1
+  fi
+  [[ -n "$repo" && -n "$release_channel" && -n "$lab_mode" ]] || return 1
+  if [[ -n "$expected_account" ]]; then
+    [[ -n "$account" && "$account" == "$expected_account" ]] || return 1
+  else
+    [[ -z "$account" ]] || return 1
+  fi
+  valid_target_repo "$repo" || return 1
+  valid_release_channel "$release_channel" || return 1
+  [[ "$lab_mode" == 0 || "$lab_mode" == 1 ]] || return 1
+  printf '%s\t%s\t%s\n' "$repo" "$release_channel" "$lab_mode"
+}
+resolve_dns_search_domain() {
+  local resolv_conf="$1" line domain="" candidate
+  [[ -r "$resolv_conf" ]] || return 1
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    read -r -a fields <<<"$line"
+    [[ "${#fields[@]}" -gt 0 ]] || continue
+    case "${fields[0]}" in
+      search)
+        [[ "${#fields[@]}" -eq 2 ]] || return 1
+        candidate="${fields[1]%.}"
+        if [[ -n "$domain" && "$candidate" != "$domain" ]]; then return 1; fi
+        domain="$candidate"
+        ;;
+      domain)
+        [[ "${#fields[@]}" -eq 2 ]] || return 1
+        candidate="${fields[1]%.}"
+        if [[ -n "$domain" && "$candidate" != "$domain" ]]; then return 1; fi
+        domain="$candidate"
+        ;;
+    esac
+  done <"$resolv_conf"
+  [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || return 1
+  printf '%s\n' "${domain,,}"
+}
+
+query_dns_txt() {
+  local fqdn="$1" raw header dns_status line
+  command -v dig >/dev/null 2>&1 || return 3
+  raw="$(dig +time=3 +tries=1 +noquestion +nostats +noauthority +noadditional TXT "$fqdn")" || return 3
+  header="$(awk '/^;; ->>HEADER<<-/{print; exit}' <<<"$raw")"
+  [[ -n "$header" ]] || return 3
+  dns_status="$(sed -n 's/.*status: \([^, ]*\).*/\1/p' <<<"$header")"
+  case "$dns_status" in
+    NOERROR|NXDOMAIN) ;;
+    *) return 3 ;;
+  esac
+  [[ "$dns_status" == NOERROR ]] || return 0
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == \;* ]] && continue
+    if [[ "$line" =~ ^[^[:space:]]+[[:space:]]+[0-9]+[[:space:]]+IN[[:space:]]+TXT[[:space:]]+(.+)$ ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
+  done <<<"$raw"
+}
+
+decode_dns_txt_line() {
+  local line="$1" chunk payload=""
+  while [[ -n "$line" ]]; do
+    [[ "$line" =~ ^\"([A-Za-z0-9._/:=[:space:];+_-]*)\"(.*)$ ]] || return 1
+    chunk="${BASH_REMATCH[1]}"
+    line="${BASH_REMATCH[2]}"
+    payload+="$chunk"
+    if [[ -n "$line" ]]; then
+      [[ "$line" == ' '* ]] || return 1
+      line="${line# }"
+      [[ -n "$line" ]] || return 1
+    fi
+  done
+  [[ -n "$payload" ]] || return 1
+  printf '%s\n' "$payload"
+}
+
+resolve_dns_channel_binding() {
+  local domain records line payload binding
+  local -a lines=()
+  domain="$(resolve_dns_search_domain /etc/resolv.conf)" || return 2
+  records="$(query_dns_txt "_pki.$domain")" || return $?
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && lines+=("$line")
+  done <<<"$records"
+  [[ "${#lines[@]}" -gt 0 ]] || return 4
+  [[ "${#lines[@]}" -eq 1 ]] || return 2
+  line="${lines[0]}"
+  payload="$(decode_dns_txt_line "$line")" || return 2
+  binding="$(parse_channel_binding "$payload" "" 1)" || return 2
+  printf '%s\n' "$binding"
+}
+
+resolve_account_channel_binding() {
+  local map_path="$1" account line binding mode owner
+  local -a matches=()
+  [[ -e "$map_path" ]] || return 4
+  [[ -f "$map_path" && ! -L "$map_path" ]] || return 2
+  owner="$(stat -c '%u' -- "$map_path")" || return 2
+  mode="$(stat -c '%a' -- "$map_path")" || return 2
+  [[ "$owner" == 0 || "$owner" == "$EUID" ]] || return 2
+  [[ "$mode" =~ ^[0-7][0-5][0-5]$ ]] || return 2
+  account="$(id -un)" || return 2
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    [[ -n "${line//[[:space:]]/}" ]] || continue
+    if binding="$(parse_channel_binding "$line" "$account" 2>/dev/null)"; then
+      matches+=("$binding")
+    elif [[ "$line" == *"account=$account"* ]]; then
+      return 2
+    fi
+  done <"$map_path"
+  [[ "${#matches[@]}" -eq 1 ]] || return 2
+  printf '%s\n' "${matches[0]}"
+}
+
+apply_channel_binding() {
+  local binding="$1"
+  IFS=$'\t' read -r TARGET_REPO RELEASE_CHANNEL LAB_MODE <<<"$binding"
+  [[ -n "$TARGET_REPO" && -n "$RELEASE_CHANNEL" && -n "$LAB_MODE" ]]
+}
+
+require_lab_mode_one() {
+  [[ "$LAB_MODE" == 1 ]] || {
+    log_error "HARD_FAIL_STAGE0_LAB_MODE_REQUIRED: channel binding must declare lab_mode=1."
+    return 1
+  }
+}
+
+resolve_target_repository() {
+  local binding dns_status
+  if [[ -n "$TARGET_REPO" ]]; then
+    TARGET_RESOLUTION="target-repo-recovery-override"
+    RELEASE_CHANNEL="recovery-override"
+    LAB_MODE="unknown"
+    return 0
+  fi
+  if binding="$(resolve_dns_channel_binding)"; then
+    apply_channel_binding "$binding" || return 1
+    require_lab_mode_one || return 1
+    TARGET_RESOLUTION="dns"
+    return 0
+  else
+    dns_status=$?
+  fi
+  if [[ "$dns_status" -ne 4 ]]; then
+    log_error "HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: DNS channel binding is missing, malformed, ambiguous, or unavailable; no account mapping fallback is permitted."
+    log_error "Use --target-repo owner/repository only as an explicit recovery override."
+    return 1
+  fi
+  if binding="$(resolve_account_channel_binding "$ACCOUNT_CHANNEL_MAP")"; then
+    apply_channel_binding "$binding" || return 1
+    require_lab_mode_one || return 1
+    TARGET_RESOLUTION="explicit-account-map"
+    return 0
+  fi
+  log_error "HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: no valid DNS binding or explicit unique account-to-channel mapping is available."
+  log_error "Use --target-repo owner/repository only as an explicit recovery override."
+  return 1
 }
 
 authorization_scheme_marker() {
@@ -210,15 +454,16 @@ usage() {
 Customer YubiHSM Stage-0 Bootstrap
 
 Usage:
-  bash ./bootstrap.sh <owner/repo> [options]
+  bash ./bootstrap.sh [options]
   bash ./bootstrap.sh --target-repo <owner/repo> [options]
 
 Examples:
-  bash ./bootstrap.sh example-org/pilot-repository
+  bash ./bootstrap.sh --dry-run
+  bash ./bootstrap.sh
   bash ./bootstrap.sh --private-target --target-repo example-org/pilot-repository
 
 Options:
-  --target-repo <owner/repo>   Explicit repository cloned after bootstrap.
+  --target-repo <owner/repo>   Recovery-only repository override.
   --target-branch <branch>     Branch to clone. Default: main
   --workdir <path>             Parent directory for the clone. Default: ~/git
   --private-target             Private target: install/authenticate gh. Default.
@@ -233,11 +478,13 @@ Stage-0 scope:
   - Installs baseline repository-access tools only.
   - For private targets installs GitHub CLI from the official signed Debian repository.
   - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
-  - Uses GitHub device/web authentication; token-bearing GitHub auth environment variables are rejected.
+  - Uses GitHub device/web authentication without launching a browser on the server; token-bearing GitHub auth environment variables are rejected.
   - Verifies private repository and issue read access, clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
+  - Reads the local DNS search domain and _pki.<domain> TXT binding before GitHub authentication.
+  - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
   - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
-  - The repository is always explicit; no private repository is selected implicitly.
+  - Never enumerates repositories from the authenticated GitHub account.
 USAGE
 }
 
@@ -287,26 +534,19 @@ while [[ $# -gt 0 ]]; do
       exit 2
       ;;
     *)
-      if [[ -z "$TARGET_REPO" ]]; then
-        TARGET_REPO="$1"
-        shift
-      else
-        log_error "Unknown option (value redacted)."
-        usage >&2
-        exit 2
-      fi
+      log_error "Unexpected positional operand; use --target-repo owner/repository only for recovery."
+      usage >&2
+      exit 2
       ;;
   esac
 done
 
-[[ -n "$TARGET_REPO" ]] || {
-  log_error "An explicit repository is required; pass owner/repository or --target-repo owner/repository."
-  exit 2
-}
-[[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log_error "Invalid --target-repo."; exit 2; }
-if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
-  log_error "--target-repo contains a sensitive-shaped value and is rejected."
-  exit 2
+if [[ -n "$TARGET_REPO" ]]; then
+  valid_target_repo "$TARGET_REPO" || { log_error "Invalid --target-repo."; exit 2; }
+  if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
+    log_error "--target-repo contains a sensitive-shaped value and is rejected."
+    exit 2
+  fi
 fi
 valid_target_branch "$TARGET_BRANCH" || { log_error "Invalid --target-branch."; exit 2; }
 if sensitive_argv_value "$TARGET_BRANCH"; then
@@ -698,23 +938,22 @@ command -v dpkg >/dev/null 2>&1 || { log_error "Required package tool missing: d
 
 SUDO=()
 
-clone_url="https://github.com/${TARGET_REPO}.git"
-dest_name="${TARGET_REPO##*/}"
-dest_path="${WORKDIR%/}/${dest_name}"
-
 log_info "Stage=0"
 log_info "TargetRepository=$TARGET_REPO"
+log_info "TargetResolution=$TARGET_RESOLUTION"
+log_info "ReleaseChannel=$RELEASE_CHANNEL"
+log_info "LabMode=$LAB_MODE"
 log_info "TargetBranch=$TARGET_BRANCH"
 log_info "TargetVisibility=$TARGET_VISIBILITY"
 log_info "IssueSmokeTest=$([[ "$ISSUE_SMOKE_TEST" -eq 1 ]] && echo enabled || echo disabled)"
 log_info "Workdir=<local-path>"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  log_info "(dry-run) install ca-certificates and git if missing"
+  log_info "(dry-run) install ca-certificates, dnsutils and git if missing"
   if [[ "$TARGET_VISIBILITY" == "private" ]]; then
     log_info "(dry-run) install GitHub CLI from the official signed Debian repository if missing"
     log_info "(dry-run) prefer and verify a secure system credential store; otherwise use verified RAM-backed session-only auth"
-    log_info "(dry-run) authenticate with GitHub device/web flow if not already authenticated"
+    log_info "(dry-run) authenticate with GitHub device/web flow without opening a local browser; enter the one-time code at https://github.com/login/device from a workstation browser"
     log_info "(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context"
     log_info "(dry-run) verify private repository and issue read access"
   fi
@@ -741,6 +980,7 @@ ensure_sudo_auth() {
 
 missing_packages=()
 command -v git >/dev/null 2>&1 || missing_packages+=(git)
+if [[ -z "$TARGET_REPO" ]] && ! command -v dig >/dev/null 2>&1; then missing_packages+=(dnsutils); fi
 if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then missing_packages+=(ca-certificates); fi
 if [[ "$TARGET_VISIBILITY" == "private" ]] && ! command -v gh >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then missing_packages+=(curl); fi
 if [[ "$TARGET_VISIBILITY" == "private" ]] && ! command -v secret-tool >/dev/null 2>&1; then missing_packages+=(libsecret-tools); fi
@@ -752,6 +992,17 @@ if [[ "${#missing_packages[@]}" -gt 0 ]]; then
 else
   log_ok "Baseline client-access packages already present."
 fi
+
+resolve_target_repository || exit 2
+valid_target_repo "$TARGET_REPO" || { log_error "Invalid --target-repo."; exit 2; }
+if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
+  log_error "--target-repo contains a sensitive-shaped value and is rejected."
+  exit 2
+fi
+
+clone_url="https://github.com/${TARGET_REPO}.git"
+dest_name="${TARGET_REPO##*/}"
+dest_path="${WORKDIR%/}/${dest_name}"
 
 effective_clone_url="$(git ls-remote --get-url "$clone_url" 2>/dev/null)" || {
   log_error "Git could not resolve the requested GitHub clone URL without contacting the target repository."
@@ -1431,6 +1682,67 @@ restore_gh_config_snapshot() {
   fi
 }
 
+make_headless_gh_browser_helper() {
+  local root="$1" helper mode
+  [[ -n "$root" && -d "$root" && ! -L "$root" ]] || {
+    log_error "Headless GitHub browser-helper root is not a safe directory."
+    return 1
+  }
+  helper="$(mktemp "$root/yhsm-stage0-gh-browser.XXXXXX")" || return 1
+  cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+expected='https://github.com/login/device'
+url="${1:-}"
+case "$url" in
+  "$expected"|"$expected/") ;;
+  *)
+    printf '%s\n' '[-] GitHub CLI requested an unexpected browser URL; refusing local browser handoff.' >&2
+    exit 64
+    ;;
+esac
+printf '%s\n' '[*] No browser was opened on this server.'
+printf '%s\n' '[*] Open https://github.com/login/device in a normal browser on your workstation and enter the one-time code shown by GitHub CLI.'
+EOF
+  chmod 0700 "$helper" || { rm -f -- "$helper"; return 1; }
+  mode="$(stat -c '%a' -- "$helper" 2>/dev/null || true)"
+  [[ "$mode" == '700' && -f "$helper" && ! -L "$helper" ]] || {
+    rm -f -- "$helper"
+    log_error "Headless GitHub browser helper failed its file-permission contract."
+    return 1
+  }
+  printf '%s\n' "$helper"
+}
+
+run_gh_headless_device_login() {
+  local helper_root="$1" browser_helper child_rc=0 cleanup_rc=0
+  shift
+  browser_helper="$(make_headless_gh_browser_helper "$helper_root")" || return 1
+
+  log_info "Headless GitHub Device authentication: no browser will be opened on this server."
+  log_info "Copy the one-time code shown by GitHub CLI, then open https://github.com/login/device in a normal browser on your workstation and enter the code there."
+  log_info "If GitHub CLI asks to press Enter to open a browser, press Enter; Stage-0 intercepts that handoff and keeps the server headless."
+
+  if run_interruptible_child env "GH_BROWSER=$browser_helper" "BROWSER=$browser_helper" gh auth login --hostname github.com --git-protocol https --web "$@"; then
+    child_rc=0
+  else
+    child_rc=$?
+  fi
+
+  rm -f -- "$browser_helper" || cleanup_rc=1
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    return "$PENDING_SIGNAL_STATUS"
+  fi
+  if [[ "$child_rc" -ne 0 ]]; then
+    return "$child_rc"
+  fi
+  if [[ "$cleanup_rc" -ne 0 ]]; then
+    log_error "Unable to remove temporary headless GitHub browser helper."
+    return 1
+  fi
+  return 0
+}
+
 run_gh_device_login_fail_closed() {
   local config_file config_dir snapshot_dir backup_file existed=0 login_rc=0 result_rc=0
   config_file="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
@@ -1446,7 +1758,7 @@ run_gh_device_login_fail_closed() {
   mkdir -p "$config_dir"
 
   SIGNAL_DEFER_EXIT=1
-  if run_interruptible_child gh auth login --hostname github.com --git-protocol https --web; then
+  if run_gh_headless_device_login "$snapshot_dir"; then
     login_rc=0
   else
     login_rc=$?
@@ -1905,9 +2217,9 @@ trap 'forward_termination_signal TERM 143' TERM
 run_gh_session_login() {
   local session_hosts mode child_rc
   start_session_auth || return 1
-  log_info "Complete the one-time GitHub Device/Web flow shown by GitHub CLI."
+  log_info "Starting session-only GitHub Device/Web authentication."
 
-  if run_interruptible_child gh auth login --hostname github.com --git-protocol https --web --insecure-storage; then
+  if run_gh_headless_device_login "$SESSION_ROOT" --insecure-storage; then
     :
   else
     child_rc=$?
@@ -2060,7 +2372,6 @@ if [[ "$TARGET_VISIBILITY" == "private" ]]; then
     gh auth setup-git --hostname github.com
   elif verify_secure_gh_credential_backend; then
     log_info "GitHub authentication required for the private repository."
-    log_info "Complete the one-time device/web flow shown by GitHub CLI."
     run_gh_device_login_fail_closed
     reject_plaintext_gh_credentials
     gh auth setup-git --hostname github.com
@@ -2457,7 +2768,7 @@ if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
 
 if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
   verify_session_postconditions "$dest_path" || exit 1
-  finish_session_auth || { log_error "Unable to remove session-only GitHub authentication state."; exit 1; }
+  finish_session_auth || { log_error "Unable to remove the RAM-backed Stage-0 session credentials."; exit 1; }
 fi
 
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
