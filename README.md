@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/7ef1ffdffa112dcebb317c79c28da4153b7a1cd7/bootstrap.sh && echo '748e0bbae72e043e180d728b13c733f436bb433b7e1f3d7113f845a51e198f07  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/b36398e7c030d820e3d672fb3d946c71d3f72f69/bootstrap.sh && echo '2c77976a2257df7e69cb3c15058315927c4bbea3cd19792d016c0f7a53de1bc1  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -48,7 +48,7 @@ Private access uses GitHub Device/Web authentication. A working secure OS creden
 
 `sudo` is requested only when missing packages must actually be installed. Stage-0 verifies private repository and issue read access, clones the selected branch and prints an exact readback. The optional issue smoke test must be explicitly selected and uses sanitized temporary content only.
 
-The RAM-backed Stage-0 session is deliberately removed after onboarding. A later private package operation may therefore require its own bounded second Device/Web login. No single-login handoff or credential continuity is claimed.
+After successful private clone, exact branch/head readback and session-only postcondition verification, Stage-0 keeps the isolated GitHub CLI session only in verified RAM-backed storage and publishes a non-secret handoff descriptor bound to the exact repository, branch and a maximum 900-second lifetime. The matching customer bootstrap consumes that handoff before any customer credential-store check, so the authorized E2E path does not require a second Device/Web login. The customer side removes the descriptor and session root on success, failure, interruption or expiry; a missing, invalid, expired or mismatched handoff fails closed. No token is written to persistent disk, argv, logs, URLs, repository content or normal user Git/GitHub configuration.
 
 The script does not configure a YubiHSM, Connector, DNS, AD, or PKI system and does not publish a release.
 
