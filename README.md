@@ -23,7 +23,7 @@ bash ./bootstrap.sh <authorized-owner>/<authorized-repository> --dry-run
 bash ./bootstrap.sh <authorized-owner>/<authorized-repository>
 ```
 
-`owner/repository` is documentation syntax only. Do not execute it literally. The `--dry-run` prints the plan but does not prove that the target repository exists or that your account can access it. If the channel instruction does not provide an explicit authorized target, stop and obtain the channel binding; do not guess a repository.
+`owner/repository` is documentation syntax only. Do not execute it literally. The `--dry-run` prints the plan but does not prove that the target repository exists or that your account can access it. If the channel instruction does not provide an explicit authorized target, stop and obtain the channel binding; do not guess a repository. The bootstrap script rejects the common documentation placeholders before package installation or GitHub authentication.
 
 The download URL is bound to an immutable Public commit and the SHA-256 is bound to those exact `bootstrap.sh` bytes. Do not replace the immutable ref with `main`, do not skip the checksum verification, and do not pipe a download directly into a shell.
 
