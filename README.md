@@ -48,28 +48,22 @@ The download URL is bound to an immutable Public commit and the SHA-256 is bound
 
 ## Safe use
 
-Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host and always name the repository supplied for your authorized channel. A directly downloaded bootstrap file is not assumed to have an executable mode, so invoke it explicitly with Bash.
-
-For the normal private onboarding path, the execution step is intentionally short:
+Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host. The normal entry is parameterless:
 
 ```sh
-bash ./bootstrap.sh owner/repository --dry-run
-bash ./bootstrap.sh owner/repository
+bash ./bootstrap.sh --dry-run
+bash ./bootstrap.sh
 ```
 
-The positional `<authorized-owner>/<authorized-repository>` form is an explicit shorthand for `--target-repo <authorized-owner>/<authorized-repository>`; there is still no implicit private target. The literal `owner/repository` form is a placeholder/negative test only. The long form remains supported when advanced options are needed:
+Use `--target-repo <authorized-owner>/<authorized-repository>` only as an explicit, separately authorized diagnostic or exception path. The literal `owner/repository` form is a placeholder/negative test only.
 
-```sh
-bash ./bootstrap.sh --private-target --target-repo owner/repository
-```
+For a fresh system, download, integrity verification and execution remain separate trust gates. The immutable download reference and SHA-256 must be checked before Bash executes the file; never replace the immutable reference with `main), skip verification or pipe a download directly into a shell.
 
-For a fresh system, the operator-facing delivery instruction must bind download and verification together so the operator does not need to obtain, transcribe or compare a checksum separately. A future Stage-0 release may shorten the URL further by publishing `bootstrap.sh` and its checksum as immutable release assets, but download, verification and execution remain separate trust gates.
+Private access uses GitHub Device/Web authentication. A working secure OS credential backend is preferred and remains supported. On a headless host where no usable Secret Service is available, Stage 0 may use an isolated session-only GitHub CLI configuration in a verified RAM-backed temporary directory. That session configuration is removed after success, failure or interruption and must not leave a plaintext token or credential helper in the normal user configuration or cloned repository. Token-bearing GitHub authentication environment variables remain rejected; do not put tokens, passwords, credentials, private keys or authorization data in arguments.
 
-Private access uses GitHub Device/Web authentication. A working secure OS credential backend is preferred and remains supported. On a headless host where no usable Secret Service is available, Stage-0 may use an isolated session-only GitHub CLI configuration in a verified RAM-backed temporary directory. That session configuration is removed after success, failure or interruption and must not leave a plaintext token or credential helper in the normal user configuration or cloned repository. Token-bearing GitHub authentication environment variables remain rejected; do not put tokens, passwords, credentials, private keys or authorization data in arguments.
+`sudo` is requested only when missing packages must actually be installed. Stage 0 verifies private repository and issue read access, clones the selected branch and prints an exact readback. The optional issue smoke test must be explicitly selected and uses sanitized temporary content only.
 
-`sudo` is requested only when missing packages must actually be installed. Stage-0 verifies private repository and issue read access, clones the selected branch and prints an exact readback. The optional issue smoke test must be explicitly selected and uses sanitized temporary content only.
-
-The script does not configure a YubiHSM, Connector, DNS, AD, or PKI system and does not publish a release.
+The script does not configure a YubiHSM, Connector, DNS, AD or PKI system and does not publish a release.
 
 ## License and support boundary
 
