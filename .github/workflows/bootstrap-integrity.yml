@@ -1,0 +1,64 @@
+name: Verify Stage-0 bootstrap integrity
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - README.md
+      - bootstrap.sh
+      - .github/workflows/bootstrap-integrity.yml
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - bootstrap.sh
+      - .github/workflows/bootstrap-integrity.yml
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    name: README pin matches bootstrap bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify immutable bootstrap pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          import re
+
+          readme = Path("README.md").read_text(encoding="utf-8")
+          bootstrap = Path("bootstrap.sh").read_bytes()
+          pattern = re.compile(
+              r"curl -fsSLo bootstrap\\.sh "
+              r"https://raw\\.githubusercontent\\.com/skk-sec/yhsm/"
+              r"(?P<ref>[0-9a-f]{40})/bootstrap\\.sh && echo "
+              r"'(?P<sha>[0-9a-f]{64})  bootstrap\\.sh' \\| sha256sum -c -"
+          )
+          matches = list(pattern.finditer(readme))
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one immutable bootstrap pin, found {len(matches)}"
+              )
+          ref = matches[0].group("ref")
+          pinned = matches[0].group("sha")
+          actual = sha256(bootstrap).hexdigest()
+          if ref == "main":
+              raise SystemExit("mutable bootstrap ref 'main' is forbidden")
+          if pinned != actual:
+              raise SystemExit(
+                  f"README SHA-256 {pinned} does not match bootstrap SHA-256 {actual}"
+              )
+          print(f"public_commit={ref}")
+          print(f"bootstrap_sha256={actual}")
+          print("integrity=OK")
+          PY
