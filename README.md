@@ -16,15 +16,22 @@ The expected result is:
 bootstrap.sh: OK
 ```
 
-Only after that verification succeeds, run the separately downloaded file with Bash and the repository supplied for your authorized channel:
+Only after that verification succeeds, run the separately downloaded file with Bash and the exact repository supplied by your authorized channel instruction:
 
 ```sh
-bash ./bootstrap.sh owner/repository --dry-run
-bash ./bootstrap.sh owner/repository
+bash ./bootstrap.sh <authorized-owner>/<authorized-repository> --dry-run
+bash ./bootstrap.sh <authorized-owner>/<authorized-repository>
 ```
+
+`owner/repository` is documentation syntax only. Do not execute it literally. The `--dry-run` prints the plan but does not prove that the target repository exists or that your account can access it. If the channel instruction does not provide an explicit authorized target, stop and obtain the channel binding; do not guess a repository.
 
 The download URL is bound to an immutable Public commit and the SHA-256 is bound to those exact `bootstrap.sh` bytes. Do not replace the immutable ref with `main`, do not skip the checksum verification, and do not pipe a download directly into a shell.
 
+## Release selection and BUES/GEV channel rule
+
+Stage 0 is release-neutral. After the authorized channel has been established, resolve the current qualified release live from that channel and bind it to its exact version, commit, manifest and asset SHA-256 values. Never reuse a release from memory, a snapshot or a moving `latest` label.
+
+BUES and GEV are separate channels and may have different current qualified releases. Equality is required only when the operation explicitly declares a byte-identical BUES→GEV mirror or promotion. In that case, compare the exact version, source binding, manifest and asset hashes before proceeding.
 ## Safe use
 
 Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host and always name the repository supplied for your authorized channel. A directly downloaded bootstrap file is not assumed to have an executable mode, so invoke it explicitly with Bash.
@@ -36,7 +43,7 @@ bash ./bootstrap.sh owner/repository --dry-run
 bash ./bootstrap.sh owner/repository
 ```
 
-The positional `owner/repository` form is an explicit shorthand for `--target-repo owner/repository`; there is still no implicit private target. The long form remains supported when advanced options are needed:
+The positional `<authorized-owner>/<authorized-repository>` form is an explicit shorthand for `--target-repo <authorized-owner>/<authorized-repository>`; there is still no implicit private target. The literal `owner/repository` form is a placeholder/negative test only. The long form remains supported when advanced options are needed:
 
 ```sh
 bash ./bootstrap.sh --private-target --target-repo owner/repository
