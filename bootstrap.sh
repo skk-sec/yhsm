@@ -2226,7 +2226,7 @@ cleanup_ignored_paths_record() {
 
 cleanup_session_auth_best_effort() {
   local root="$SESSION_ROOT"
-  [[ "$SESSION_HANDOFF_ACTIVE" -eq 1 ]] && return 0
+  [[ "${SESSION_HANDOFF_ACTIVE:-0}" -eq 1 ]] && return 0
   [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
   restore_original_auth_environment || true
 
