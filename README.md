@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/6f567c3df4ab0bec5ba129d85c156a0e281f4f88/bootstrap.sh && echo '6414519a6e90f6bd24dff5a01f4200ededc837aa7e854b3a028f4be628ea8d51  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/1d4ef42cdcc83f07465c9ffd3707989e9daf736a/bootstrap.sh && echo 'd47fd50d69918e877237e2399202c186991195d27eb232897314047f368d0e6e  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -48,7 +48,7 @@ Private access uses GitHub Device/Web authentication. A working secure OS creden
 
 `sudo` is requested only when missing packages must actually be installed. Stage-0 verifies private repository and issue read access, clones the selected branch and prints an exact readback. The optional issue smoke test must be explicitly selected and uses sanitized temporary content only.
 
-After successful private clone, exact branch/head readback and session-only postcondition verification, Stage-0 keeps the isolated GitHub CLI session only in verified RAM-backed storage and publishes a non-secret handoff descriptor bound to the exact repository, branch and a maximum 900-second lifetime. The matching customer bootstrap consumes that handoff before any customer credential-store check, so the authorized E2E path does not require a second Device/Web login. The customer side removes the descriptor and session root on success, failure, interruption or expiry; a missing, invalid, expired or mismatched handoff fails closed. No token is written to persistent disk, argv, logs, URLs, repository content or normal user Git/GitHub configuration.
+After successful private clone, exact branch/head readback and session-only postcondition verification, Stage-0 keeps the isolated GitHub CLI session only in verified RAM-backed storage and publishes a non-secret handoff descriptor bound to the exact repository, branch and a maximum 900-second lifetime. A producer-side reaper removes the descriptor and token-bearing session root at expiry, and the producer safely reclaims an expired handoff on retry while refusing to overwrite a live or invalid one. The matching customer bootstrap consumes a valid handoff before any customer credential-store or fallback login, so the authorized E2E path does not require a second Device/Web login. The customer side removes the descriptor and session root after extracting the token or on failure/interruption; a missing handoff follows the customer's documented fallback, while an invalid, expired or mismatched handoff fails closed. No token is written to persistent disk, argv, logs, URLs, repository content or normal user Git/GitHub configuration.
 
 The script does not configure a YubiHSM, Connector, DNS, AD, or PKI system and does not publish a release.
 
