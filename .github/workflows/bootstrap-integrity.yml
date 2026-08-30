@@ -39,16 +39,28 @@ jobs:
 
           readme = Path("README.md").read_text(encoding="utf-8")
           local_bootstrap = Path("bootstrap.sh").read_bytes()
-          pattern = re.compile(
+          url_pattern = re.compile(
               r"https://raw\.githubusercontent\.com/skk-sec/yhsm/"
               r"(?P<ref>[^/\s'\"]+)/bootstrap\.sh"
+              r"(?![A-Za-z0-9._/-])"
           )
-          urls = list(pattern.finditer(readme))
-          if len(urls) != 1:
+          urls = list(url_pattern.finditer(readme))
+          command_pattern = re.compile(
+              r"(?m)^curl -fsSLo bootstrap\.sh "
+              r"https://raw\.githubusercontent\.com/skk-sec/yhsm/"
+              r"(?P<ref>[^/\s'\"]+)/bootstrap\.sh"
+              r"(?![A-Za-z0-9._/-]) && echo "
+              r"'(?P<sha>[0-9a-f]{64})  bootstrap\.sh' \| sha256sum -c -$"
+          )
+          commands = list(command_pattern.finditer(readme))
+          if len(urls) != 1 or len(commands) != 1:
               raise SystemExit(
-                  f"expected exactly one raw Public bootstrap URL, found {len(urls)}"
+                  "expected exactly one complete immutable bootstrap command and URL"
               )
-          ref = urls[0].group("ref")
+          ref = commands[0].group("ref")
+          pinned = commands[0].group("sha")
+          if urls[0].group("ref") != ref:
+              raise SystemExit("README contains inconsistent bootstrap URLs")
           if not re.fullmatch(r"[0-9a-f]{40}", ref):
               raise SystemExit(
                   f"Public bootstrap ref must be one immutable commit SHA, got {ref!r}"
@@ -66,12 +78,6 @@ jobs:
               raise SystemExit(
                   "checked-out bootstrap.sh does not match the bytes served at the pinned Public commit"
               )
-          sha_matches = re.findall(r"(?P<sha>[0-9a-f]{64})  bootstrap\.sh", readme)
-          if len(sha_matches) != 1:
-              raise SystemExit(
-                  f"expected exactly one SHA-256 bootstrap pin, found {len(sha_matches)}"
-              )
-          pinned = sha_matches[0]
           actual = sha256(remote_bootstrap).hexdigest()
           if pinned != actual:
               raise SystemExit(
