@@ -21,6 +21,10 @@ SMOKE_ISSUE_NUMBER=""
 SESSION_AUTH_ACTIVE=0
 SESSION_ROOT=""
 SESSION_PARENT=""
+SESSION_HANDOFF_FILE=""
+SESSION_HANDOFF_ACTIVE=0
+HANDOFF_REAPER_PID=""
+HANDOFF_PUBLISHING=0
 # Compatibility markers for the Stage-0 handoff candidate contract.
 STAGE0_HANDOFF_CANDIDATE_FILE=""
 STAGE0_HANDOFF_CANDIDATE_ROOT=""
@@ -1880,11 +1884,143 @@ start_session_auth() {
   [[ "$mode" == "700" ]] || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
   mkdir -p "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
   chmod 0700 "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
+  printf "yhsm-stage0-session-v1\\n" >"$SESSION_ROOT/.yhsm-stage0-session"
+  chmod 0600 "$SESSION_ROOT/.yhsm-stage0-session"
   export HOME="$SESSION_ROOT/home"
   export XDG_CONFIG_HOME="$SESSION_ROOT/xdg"
   export GH_CONFIG_DIR="$SESSION_ROOT/gh"
   SESSION_AUTH_ACTIVE=1
   log_info "Secure OS credential store unavailable; using verified RAM-backed session-only GitHub authentication."
+}
+
+stage0_session_handoff_path() {
+  printf '%s/yhsm-stage0-handoff-%s\n' "$SESSION_PARENT" "$EUID"
+}
+
+remove_owned_session_root() {
+  local root="$1" parent="$2" canonical
+  [[ -n "$root" && -n "$parent" ]] || return 1
+  [[ "$root" != "$parent" && "$root" != *..* && "$root" != *//* && "$root" != */./* && "$root" != */. ]] || return 1
+  canonical="$(realpath -e -- "$root" 2>/dev/null || true)"
+  [[ "$canonical" == "$root" && "$canonical" == "$parent/"* ]] || return 1
+  [[ -d "$canonical" && ! -L "$canonical" && "$(stat -c '%u' -- "$canonical" 2>/dev/null || true)" == "$EUID" && "$(stat -c '%a' -- "$canonical" 2>/dev/null || true)" == "700" ]] || return 1
+  rm -rf -- "$root" || return 1
+  [[ ! -e "$root" && ! -L "$root" ]]
+}
+
+revoke_session_handoff() {
+  local root="$SESSION_ROOT" parent="$SESSION_PARENT" pid="$HANDOFF_REAPER_PID"
+  [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]] || kill "$pid" 2>/dev/null || true
+  HANDOFF_REAPER_PID=""
+  [[ -z "$SESSION_HANDOFF_FILE" || ! -e "$SESSION_HANDOFF_FILE" || -L "$SESSION_HANDOFF_FILE" ]] || rm -f -- "$SESSION_HANDOFF_FILE" || true
+  remove_owned_session_root "$root" "$parent" || true
+  SESSION_HANDOFF_FILE=""
+  SESSION_HANDOFF_ACTIVE=0
+  SESSION_AUTH_ACTIVE=0
+  SESSION_ROOT=""
+  SESSION_PARENT=""
+}
+
+reclaim_expired_session_handoff() {
+  local path="$1" parent="$SESSION_PARENT" root="" expires="" key value now
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  [[ "$(stat -c '%u' -- "$path" 2>/dev/null || true)" == "$EUID" && "$(stat -c '%a' -- "$path" 2>/dev/null || true)" == "600" ]] || return 1
+  while IFS='=' read -r key value; do
+    case "$key" in
+      root) root="$value" ;;
+      expires_epoch) expires="$value" ;;
+      version|repository|branch|created_epoch) ;;
+      *) return 1 ;;
+    esac
+  done <"$path"
+  [[ -n "$root" && "$expires" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)" || return 1
+  if (( now < expires )); then return 1; fi
+  remove_owned_session_root "$root" "$parent" || return 1
+  rm -f -- "$path" || return 1
+  [[ ! -e "$path" && ! -L "$path" ]]
+}
+
+start_session_handoff_reaper() {
+  local handoff_file="$SESSION_HANDOFF_FILE" parent="$SESSION_PARENT" expected_root="$SESSION_ROOT" expected_expiry="$1"
+  (
+    trap '' HUP INT TERM
+    local now delay root="" expires="" key value
+    now="$(date +%s)" || exit 0
+    delay=$((expected_expiry - now))
+    (( delay > 0 )) && sleep "$delay"
+    [[ -f "$handoff_file" && ! -L "$handoff_file" ]] || exit 0
+    [[ "$(stat -c '%u' -- "$handoff_file" 2>/dev/null || true)" == "$EUID" && "$(stat -c '%a' -- "$handoff_file" 2>/dev/null || true)" == "600" ]] || exit 0
+    while IFS='=' read -r key value; do
+      case "$key" in
+        root) root="$value" ;;
+        expires_epoch) expires="$value" ;;
+        version|repository|branch|created_epoch) ;;
+        *) exit 0 ;;
+      esac
+    done <"$handoff_file"
+    [[ "$root" == "$expected_root" && "$expires" == "$expected_expiry" ]] || exit 0
+    now="$(date +%s)" || exit 0
+    (( now >= expires )) || exit 0
+    remove_owned_session_root "$root" "$parent" || exit 0
+    rm -f -- "$handoff_file" || exit 0
+  ) >/dev/null 2>&1 &
+  HANDOFF_REAPER_PID="$!"
+}
+
+handoff_publish_fail() {
+  HANDOFF_PUBLISHING=0
+  SIGNAL_DEFER_EXIT=0
+  revoke_session_handoff
+  return 1
+}
+
+publish_session_handoff() {
+  local path now expires tmp
+  SIGNAL_DEFER_EXIT=1
+  HANDOFF_PUBLISHING=1
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" && -n "$SESSION_PARENT" ]] || { handoff_publish_fail; return; }
+  path="$(stage0_session_handoff_path)" || { handoff_publish_fail; return; }
+  if [[ -e "$path" || -L "$path" ]]; then
+    reclaim_expired_session_handoff "$path" || {
+      log_error "A previous live or invalid Stage-0 session handoff is still present; refusing overwrite."
+      handoff_publish_fail
+      return
+    }
+    [[ ! -e "$path" && ! -L "$path" ]] || { handoff_publish_fail; return; }
+  fi
+  now="$(date +%s)" || { handoff_publish_fail; return; }
+  expires=$((now + 900))
+  tmp="$(mktemp "$SESSION_PARENT/.yhsm-stage0-handoff.XXXXXX")" || { handoff_publish_fail; return; }
+  chmod 0600 "$tmp" || { rm -f -- "$tmp"; handoff_publish_fail; return; }
+  {
+    printf 'version=1\n'
+    printf 'root=%s\n' "$SESSION_ROOT"
+    printf 'repository=%s\n' "$TARGET_REPO"
+    printf 'branch=%s\n' "$TARGET_BRANCH"
+    printf 'created_epoch=%s\n' "$now"
+    printf 'expires_epoch=%s\n' "$expires"
+  } >"$tmp" || { rm -f -- "$tmp"; handoff_publish_fail; return; }
+  if ! ln -- "$tmp" "$path"; then
+    rm -f -- "$tmp"
+    log_error "Unable to publish the RAM-backed Stage-0 session handoff."
+    handoff_publish_fail
+    return
+  fi
+  rm -f -- "$tmp" || { handoff_publish_fail; return; }
+  SESSION_HANDOFF_FILE="$path"
+  SESSION_HANDOFF_ACTIVE=1
+  restore_original_auth_environment || { handoff_publish_fail; return; }
+  SESSION_AUTH_ACTIVE=0
+  start_session_handoff_reaper "$expires"
+  HANDOFF_PUBLISHING=0
+  SIGNAL_DEFER_EXIT=0
+  if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
+    revoke_session_handoff
+    forward_termination_signal "${PENDING_SIGNAL_NAME:-TERM}" "$PENDING_SIGNAL_STATUS"
+    return 1
+  fi
+  log_ok "RAM-backed Stage-0 session handoff published; next customer bootstrap must consume it before expiry."
 }
 
 restore_original_auth_environment() {
@@ -2768,7 +2904,7 @@ if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
 
 if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
   verify_session_postconditions "$dest_path" || exit 1
-  finish_session_auth || { log_error "Unable to remove the RAM-backed Stage-0 session credentials."; exit 1; }
+  publish_session_handoff || { log_error "Unable to publish the RAM-backed Stage-0 session handoff."; exit 1; }
 fi
 
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
