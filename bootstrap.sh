@@ -21,6 +21,8 @@ SMOKE_ISSUE_NUMBER=""
 SESSION_AUTH_ACTIVE=0
 SESSION_ROOT=""
 SESSION_PARENT=""
+SESSION_HANDOFF_FILE=""
+SESSION_HANDOFF_ACTIVE=0
 # Compatibility markers for the Stage-0 handoff candidate contract.
 STAGE0_HANDOFF_CANDIDATE_FILE=""
 STAGE0_HANDOFF_CANDIDATE_ROOT=""
@@ -1887,6 +1889,45 @@ start_session_auth() {
   log_info "Secure OS credential store unavailable; using verified RAM-backed session-only GitHub authentication."
 }
 
+stage0_session_handoff_path() {
+  printf '%s/yhsm-stage0-handoff-%s\n' "$SESSION_PARENT" "$EUID"
+}
+
+revoke_session_handoff() {
+  [[ -z "$SESSION_HANDOFF_FILE" || ! -e "$SESSION_HANDOFF_FILE" || -L "$SESSION_HANDOFF_FILE" ]] || rm -f -- "$SESSION_HANDOFF_FILE" || true
+  SESSION_HANDOFF_FILE=""; SESSION_HANDOFF_ACTIVE=0
+}
+
+publish_session_handoff() {
+  local path now expires tmp
+  [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" && -n "$SESSION_PARENT" ]] || return 1
+  path="$(stage0_session_handoff_path)" || return 1
+  [[ ! -e "$path" && ! -L "$path" ]] || { log_error "A previous Stage-0 session handoff is still present; refusing overwrite."; return 1; }
+  now="$(date +%s)" || return 1
+  expires=$((now + 900))
+  tmp="$(mktemp "$SESSION_PARENT/.yhsm-stage0-handoff.XXXXXX")" || return 1
+  chmod 0600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  {
+    printf 'version=1\n'
+    printf 'root=%s\n' "$SESSION_ROOT"
+    printf 'repository=%s\n' "$TARGET_REPO"
+    printf 'branch=%s\n' "$TARGET_BRANCH"
+    printf 'created_epoch=%s\n' "$now"
+    printf 'expires_epoch=%s\n' "$expires"
+  } >"$tmp" || { rm -f -- "$tmp"; return 1; }
+  if ! ln -- "$tmp" "$path"; then
+    rm -f -- "$tmp"
+    log_error "Unable to publish the RAM-backed Stage-0 session handoff."
+    return 1
+  fi
+  rm -f -- "$tmp" || { revoke_session_handoff; return 1; }
+  SESSION_HANDOFF_FILE="$path"
+  SESSION_HANDOFF_ACTIVE=1
+  restore_original_auth_environment || { revoke_session_handoff; return 1; }
+  SESSION_AUTH_ACTIVE=0
+  log_ok "RAM-backed Stage-0 session handoff published; next customer bootstrap must consume it before expiry."
+}
+
 restore_original_auth_environment() {
   export HOME="$ORIGINAL_HOME"
   if [[ "$ORIGINAL_XDG_CONFIG_HOME_SET" -eq 1 ]]; then
@@ -2185,6 +2226,7 @@ cleanup_ignored_paths_record() {
 
 cleanup_session_auth_best_effort() {
   local root="$SESSION_ROOT"
+  [[ "$SESSION_HANDOFF_ACTIVE" -eq 1 ]] && return 0
   [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]] || return 0
   restore_original_auth_environment || true
 
@@ -2768,7 +2810,7 @@ if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
 
 if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
   verify_session_postconditions "$dest_path" || exit 1
-  finish_session_auth || { log_error "Unable to remove the RAM-backed Stage-0 session credentials."; exit 1; }
+  publish_session_handoff || { log_error "Unable to publish the RAM-backed Stage-0 session handoff."; exit 1; }
 fi
 
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
