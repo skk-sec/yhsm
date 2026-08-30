@@ -1884,6 +1884,8 @@ start_session_auth() {
   [[ "$mode" == "700" ]] || { rm -rf -- "$SESSION_ROOT"; SESSION_ROOT=""; return 1; }
   mkdir -p "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
   chmod 0700 "$SESSION_ROOT/home" "$SESSION_ROOT/xdg" "$SESSION_ROOT/gh"
+  printf "yhsm-stage0-session-v1\\n" >"$SESSION_ROOT/.yhsm-stage0-session"
+  chmod 0600 "$SESSION_ROOT/.yhsm-stage0-session"
   export HOME="$SESSION_ROOT/home"
   export XDG_CONFIG_HOME="$SESSION_ROOT/xdg"
   export GH_CONFIG_DIR="$SESSION_ROOT/gh"
