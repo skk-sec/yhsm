@@ -34,29 +34,48 @@ jobs:
           python3 - <<'PY'
           from hashlib import sha256
           from pathlib import Path
+          from urllib.request import Request, urlopen
           import re
 
           readme = Path("README.md").read_text(encoding="utf-8")
-          bootstrap = Path("bootstrap.sh").read_bytes()
+          local_bootstrap = Path("bootstrap.sh").read_bytes()
           pattern = re.compile(
-              r"curl -fsSLo bootstrap\.sh "
               r"https://raw\.githubusercontent\.com/skk-sec/yhsm/"
-              r"(?P<ref>[0-9a-f]{40})/bootstrap\.sh && echo "
-              r"'(?P<sha>[0-9a-f]{64})  bootstrap\.sh' \| sha256sum -c -"
+              r"(?P<ref>[^/\s'\"]+)/bootstrap\.sh"
           )
-          matches = list(pattern.finditer(readme))
-          if len(matches) != 1:
+          urls = list(pattern.finditer(readme))
+          if len(urls) != 1:
               raise SystemExit(
-                  f"expected exactly one immutable bootstrap pin, found {len(matches)}"
+                  f"expected exactly one raw Public bootstrap URL, found {len(urls)}"
               )
-          ref = matches[0].group("ref")
-          pinned = matches[0].group("sha")
-          actual = sha256(bootstrap).hexdigest()
-          if ref == "main":
-              raise SystemExit("mutable bootstrap ref 'main' is forbidden")
+          ref = urls[0].group("ref")
+          if not re.fullmatch(r"[0-9a-f]{40}", ref):
+              raise SystemExit(
+                  f"Public bootstrap ref must be one immutable commit SHA, got {ref!r}"
+              )
+          url = f"https://raw.githubusercontent.com/skk-sec/yhsm/{ref}/bootstrap.sh"
+          request = Request(url, headers={"User-Agent": "yhsm-stage0-integrity-guard/1"})
+          try:
+              with urlopen(request, timeout=20) as response:
+                  remote_bootstrap = response.read()
+          except Exception as exc:
+              raise SystemExit(
+                  f"unable to fetch Public bootstrap at immutable commit {ref}: {exc}"
+              ) from exc
+          if remote_bootstrap != local_bootstrap:
+              raise SystemExit(
+                  "checked-out bootstrap.sh does not match the bytes served at the pinned Public commit"
+              )
+          sha_matches = re.findall(r"(?P<sha>[0-9a-f]{64})  bootstrap\.sh", readme)
+          if len(sha_matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one SHA-256 bootstrap pin, found {len(sha_matches)}"
+              )
+          pinned = sha_matches[0]
+          actual = sha256(remote_bootstrap).hexdigest()
           if pinned != actual:
               raise SystemExit(
-                  f"README SHA-256 {pinned} does not match bootstrap SHA-256 {actual}"
+                  f"README SHA-256 {pinned} does not match pinned Public bytes {actual}"
               )
           print(f"public_commit={ref}")
           print(f"bootstrap_sha256={actual}")
