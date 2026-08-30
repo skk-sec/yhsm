@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/eff68338084c979f52895619ce07d56151b898b4/bootstrap.sh && echo '6ce19f00e28b9c24244c97a5a6266e0f7aacdc44545861668d2e14f01e24dca1  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/7ef1ffdffa112dcebb317c79c28da4153b7a1cd7/bootstrap.sh && echo '5cfac6bad63801e93f4bac14ece4f621eb188b980a1105fc0d71d50fb715457b  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -46,7 +46,7 @@ Only an absent TXT response may use the separately maintained `/etc/yhsm/stage0-
 bash ./bootstrap.sh --private-target --target-repo owner/repository
 ```
 
-For a fresh system, the operator-facing delivery instruction must bind download and verification together so the operator does not need to obtain, transcribe or compare a checksum separately. A future Stage-0 release may shorten the URL further by publishing `bootstrap.sh` and its checksum as immutable release assets, but download, verification and execution remain separate trust gates.
+For a fresh system, the operator-facing delivery instruction must bind download and verification together so the operator does not need to obtain, transcribe or compare a checksum separately. The immutable commit and SHA-256 above are the maintained Stage-0 download reference. Any newer qualified bootstrap must update this pin and its checksum together before it is published; download, verification and execution remain separate trust gates.
 
 Private access uses GitHub Device/Web authentication. A working secure OS credential backend is preferred and remains supported. On a headless host where no usable Secret Service is available, Stage-0 may use an isolated session-only GitHub CLI configuration in a verified RAM-backed temporary directory. That session configuration is removed after success, failure or interruption and must not leave a plaintext token or credential helper in the normal user configuration or cloned repository. Token-bearing GitHub authentication environment variables remain rejected; do not put tokens, passwords, credentials, private keys or authorization data in arguments.
 
