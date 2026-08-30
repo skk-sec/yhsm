@@ -16,31 +16,26 @@ The expected result is:
 bootstrap.sh: OK
 ```
 
-The normal customer-independent entry is parameterless:
+For the current public Stage-0 version, provide the explicitly authorized customer repository:
 
 ```sh
-bash ./bootstrap.sh --dry-run
-bash ./bootstrap.sh
+bash ./bootstrap.sh <authorized-owner>/<authorized-repository> --dry-run
+bash ./bootstrap.sh <authorized-owner>/<authorized-repository>
 ```
 
-Stage 0 resolves the customer channel before cloning:
+The literal form `owner/repository` is documentation syntax only and must not be executed. The `--dry-run` prints the plan but does not prove that the target repository exists or that the authenticated account can access it. If the authorized channel instruction does not provide a concrete target, stop; do not guess a repository.
+
+## Automatic routing contract
+
+A future qualified Stage-0 implementation may remove the repository operand from the normal path. Its routing contract is fixed as follows:
 
 1. DNS-first derives the local DNS search domain and reads the TXT contract at `_pki.<domain>`.
 2. The record must be unambiguous and contain valid `repo`, `release_channel` and `lab_mode` fields.
-3. GitHub Device/Web authentication verifies read access to that already DNS-bound repository; GitHub access is never used to enumerate or guess customer repositories.
-4. If DNS is missing or invalid, a separately maintained unique account-to-channel mapping may be used after authentication. Multiple or missing mappings fail closed.
-5. If no safe automatic binding exists, the script stops with a sanitized unresolved-target result and requests an explicit override.
+3. GitHub Device/Web authentication verifies read access to that DNS-bound repository; GitHub access is never used to enumerate or guess customer repositories.
+4. If DNS is missing or invalid, a separately maintained unique account-to-channel mapping may be used after authentication.
+5. Missing or multiple mappings fail closed and require the explicit target path above.
 
-DNS is discovery and environment binding only; it is not authorization and must not contain secrets.
-
-The explicit override is available for diagnostics or a separately authorized exception:
-
-```sh
-bash ./bootstrap.sh --target-repo <authorized-owner>/<authorized-repository> --dry-run
-bash ./bootstrap.sh --target-repo <authorized-owner>/<authorized-repository>
-```
-
-The literal forms `owner/repository` and `owner/bues` are documentation placeholders and negative tests. Do not execute them literally. The script rejects common placeholders before package installation or GitHub authentication.
+DNS is discovery and environment binding only; it is not authorization and must not contain secrets. Automatic routing is not enabled by the current public bootstrap until its source-first implementation and qualification are complete.
 
 Stage 0 is release-neutral. It does not select, install or infer a product release. Release selection is a later channel-specific step based on a live qualified binding; a moving `latest`, a snapshot or chat history is not a release selector.
 
