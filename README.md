@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3ddf5e32ac83283a744828fe42282e91788ec4ee/bootstrap.sh && echo '36f5f7d945f0255774b43c14f5d88b8015e31dc7c338d027e570886770c01bb8  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/634e621944d5903c07699589a2d01aea1412ba0f/bootstrap.sh && echo 'd4b22471bb1ee18c42af677fcb5159325c6803e1468a3f62990b778c5468287b  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -16,12 +16,14 @@ The expected result is:
 bootstrap.sh: OK
 ```
 
-Only after that verification succeeds, run the separately downloaded file with Bash and the repository supplied for your authorized channel:
+Only after that verification succeeds, run the downloaded file with Bash:
 
 ```sh
 bash ./bootstrap.sh --dry-run
 bash ./bootstrap.sh
 ```
+
+The normal run resolves and clones the authorized customer repository, verifies the Stage-0 handoff, and automatically starts its executable `run/bootstrap.sh` entrypoint. A second manual customer-bootstrap invocation is not required.
 
 The download URL is bound to an immutable Public commit and the SHA-256 is bound to those exact `bootstrap.sh` bytes. Do not replace the immutable ref with `main`, do not skip the checksum verification, and do not pipe a download directly into a shell.
 
@@ -48,7 +50,7 @@ Private access uses GitHub Device/Web authentication. A working secure OS creden
 
 `sudo` is requested only when missing packages must actually be installed. Stage-0 verifies private repository and issue read access, clones the selected branch and prints an exact readback. The optional issue smoke test must be explicitly selected and uses sanitized temporary content only.
 
-After successful private clone, exact branch/head readback and session-only postcondition verification, Stage-0 keeps the isolated GitHub CLI session only in verified RAM-backed storage and publishes a non-secret handoff descriptor bound to the exact repository, branch and a maximum 900-second lifetime. A producer-side reaper removes the descriptor and token-bearing session root at expiry, and the producer safely reclaims an expired handoff on retry while refusing to overwrite a live or invalid one. The matching customer bootstrap consumes a valid handoff before any customer credential-store or fallback login, so the authorized E2E path does not require a second Device/Web login. The customer side removes the descriptor and session root after extracting the token or on failure/interruption; a missing handoff follows the customer's documented fallback, while an invalid, expired or mismatched handoff fails closed. No token is written to persistent disk, argv, logs, URLs, repository content or normal user Git/GitHub configuration.
+After successful private clone, exact branch/head readback and session-only postcondition verification, Stage-0 keeps the isolated GitHub CLI session only in verified RAM-backed storage and publishes a non-secret handoff descriptor bound to the exact repository, branch and a maximum 900-second lifetime. A producer-side reaper removes the descriptor and token-bearing session root at expiry, and the producer safely reclaims an expired handoff on retry while refusing to overwrite a live or invalid one. The matching customer bootstrap consumes a valid handoff before any customer credential-store or fallback login, so the authorized E2E path does not require a second Device/Web login. The Stage-0 process starts that customer bootstrap automatically after the clone and readback succeed. The customer side removes the descriptor and session root after extracting the token or on failure/interruption; a missing handoff follows the customer's documented fallback, while an invalid, expired or mismatched handoff fails closed. No token is written to persistent disk, argv, logs, URLs, repository content or normal user Git/GitHub configuration.
 
 The script does not configure a YubiHSM, Connector, DNS, AD, or PKI system and does not publish a release.
 
