@@ -234,8 +234,12 @@ decode_dns_txt_line() {
 resolve_dns_channel_binding() {
   local domain records line payload binding
   local -a lines=()
-  domain="$(resolve_dns_search_domain /etc/resolv.conf)" || return 2
-  records="$(query_dns_txt "_pki.$domain")" || return $?
+  domain="$(resolve_dns_search_domain /etc/resolv.conf)" || return 5
+  records="$(query_dns_txt "_pki.$domain")" || {
+    local dns_query_status=$?
+    [[ "$dns_query_status" -eq 3 ]] && return 5
+    return "$dns_query_status"
+  }
   while IFS= read -r line; do
     [[ -n "$line" ]] && lines+=("$line")
   done <<<"$records"
@@ -299,11 +303,19 @@ resolve_target_repository() {
   else
     dns_status=$?
   fi
-  if [[ "$dns_status" -ne 4 ]]; then
-    log_error "HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: DNS channel binding is missing, malformed, ambiguous, or unavailable; no account mapping fallback is permitted."
-    log_error "Use --target-repo owner/repository only as an explicit recovery override."
-    return 1
-  fi
+  case "$dns_status" in
+    2)
+      log_error "HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_INVALID: DNS channel binding is malformed or ambiguous; account fallback is suppressed."
+      return 1
+      ;;
+    3|4|5)
+      # Missing or unavailable DNS metadata may use the explicit local account map.
+      ;;
+    *)
+      log_error "HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_UNKNOWN: unexpected DNS resolver status."
+      return 1
+      ;;
+  esac
   if binding="$(resolve_account_channel_binding "$ACCOUNT_CHANNEL_MAP")"; then
     apply_channel_binding "$binding" || return 1
     require_lab_mode_one || return 1
@@ -489,6 +501,7 @@ Stage-0 scope:
   - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
   - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
   - Never enumerates repositories from the authenticated GitHub account.
+  - Never creates a GitHub Issue before target binding and authentication.
 USAGE
 }
 
