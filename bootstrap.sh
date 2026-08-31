@@ -2907,7 +2907,11 @@ if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
   publish_session_handoff || { log_error "Unable to publish the RAM-backed Stage-0 session handoff."; exit 1; }
 fi
 
-if [[ "$DRY_RUN" -eq 0 && -x "$dest_path/run/bootstrap.sh" ]]; then
+if [[ "$DRY_RUN" -eq 0 && -f "$dest_path/client/manifest.json" ]]; then
+  [[ -f "$dest_path/run/bootstrap.sh" && -x "$dest_path/run/bootstrap.sh" ]] || {
+    log_error "HARD_FAIL_CUSTOMER_BOOTSTRAP_ENTRYPOINT_MISSING: the selected customer repository must provide executable run/bootstrap.sh."
+    exit 1
+  }
   log_info "Stage-0 handoff verified; starting the cloned customer bootstrap automatically."
   if run_interruptible_child "$dest_path/run/bootstrap.sh"; then
     log_ok "Customer bootstrap completed."
@@ -2916,6 +2920,8 @@ if [[ "$DRY_RUN" -eq 0 && -x "$dest_path/run/bootstrap.sh" ]]; then
     log_error "Customer bootstrap failed."
     exit "$customer_bootstrap_rc"
   fi
+elif [[ "$DRY_RUN" -eq 0 ]]; then
+  log_info "No customer client package detected; no customer bootstrap entrypoint is required."
 fi
 
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
