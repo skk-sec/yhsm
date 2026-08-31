@@ -2907,6 +2907,17 @@ if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
   publish_session_handoff || { log_error "Unable to publish the RAM-backed Stage-0 session handoff."; exit 1; }
 fi
 
+if [[ "$DRY_RUN" -eq 0 && -x "$dest_path/run/bootstrap.sh" ]]; then
+  log_info "Stage-0 handoff verified; starting the cloned customer bootstrap automatically."
+  if run_interruptible_child "$dest_path/run/bootstrap.sh"; then
+    log_ok "Customer bootstrap completed."
+  else
+    customer_bootstrap_rc=$?
+    log_error "Customer bootstrap failed."
+    exit "$customer_bootstrap_rc"
+  fi
+fi
+
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
 log_ok "Stage-0 onboarding complete."
 
