@@ -2569,6 +2569,20 @@ if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   else
     run_gh_session_login
   fi
+  github_account=""
+  if capture_interruptible_child github_account gh api user --jq .login; then
+    :
+  else
+    stage0_child_rc=$?
+    log_error "Authenticated GitHub account identity could not be read."
+    exit "$stage0_child_rc"
+  fi
+  [[ "$github_account" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] || {
+    log_error "Authenticated GitHub account identity is invalid."
+    exit 1
+  }
+  log_info "GitHubAccount=$github_account"
+
   if run_interruptible_child gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null; then
     :
   else
