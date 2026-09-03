@@ -3,6 +3,7 @@ set -euo pipefail
 
 bootstrap="${1:-$(cd "$(dirname "$0")/.." && pwd)/bootstrap.sh}"
 tmp="$(mktemp -d)"
+original_path="$PATH"
 trap 'rm -rf -- "$tmp"' EXIT
 
 # Load only the resolver/routing functions. The public entrypoint itself is never run.
@@ -40,11 +41,13 @@ expect_status 2 resolve_dns_search_domain "$tmp/malformed.conf"
 PATH="$tmp/empty"
 expect_status 4 resolve_dns_search_domain "$tmp/resolv.conf"
 
+PATH="$original_path"
 log_error() { :; }
 TARGET_REPO=""
 TARGET_RESOLUTION=""
 RELEASE_CHANNEL=""
 LAB_MODE=""
+ACCOUNT_CHANNEL_MAP="$tmp/account-map"
 resolve_dns_channel_binding() { return 6; }
 resolve_account_channel_binding() { printf 'y-hsm/gev\tv2.1.0-rc.4\t1\n'; }
 resolve_target_repository
