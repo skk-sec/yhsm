@@ -168,30 +168,62 @@ parse_channel_binding() {
   [[ "$lab_mode" == 0 || "$lab_mode" == 1 ]] || return 1
   printf '%s\t%s\t%s\n' "$repo" "$release_channel" "$lab_mode"
 }
-resolve_dns_search_domain() {
+valid_dns_domain() {
+  local domain="${1%.}"
+  [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
+}
+
+resolve_resolv_conf_search_domain() {
   local resolv_conf="$1" line domain="" candidate
-  [[ -r "$resolv_conf" ]] || return 1
+  [[ -r "$resolv_conf" ]] || return 3
   while IFS= read -r line; do
     line="${line%%#*}"
     read -r -a fields <<<"$line"
     [[ "${#fields[@]}" -gt 0 ]] || continue
     case "${fields[0]}" in
-      search)
-        [[ "${#fields[@]}" -eq 2 ]] || return 1
+      search|domain)
+        [[ "${#fields[@]}" -eq 2 ]] || return 2
         candidate="${fields[1]%.}"
-        if [[ -n "$domain" && "$candidate" != "$domain" ]]; then return 1; fi
-        domain="$candidate"
-        ;;
-      domain)
-        [[ "${#fields[@]}" -eq 2 ]] || return 1
-        candidate="${fields[1]%.}"
-        if [[ -n "$domain" && "$candidate" != "$domain" ]]; then return 1; fi
+        valid_dns_domain "$candidate" || return 2
+        candidate="${candidate,,}"
+        if [[ -n "$domain" && "$candidate" != "$domain" ]]; then return 2; fi
         domain="$candidate"
         ;;
     esac
   done <"$resolv_conf"
-  [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || return 1
-  printf '%s\n' "${domain,,}"
+  [[ -n "$domain" ]] || return 4
+  printf '%s\n' "$domain"
+}
+
+resolve_resolvectl_search_domain() {
+  local raw line values candidate domain=""
+  command -v resolvectl >/dev/null 2>&1 || return 4
+  raw="$(resolvectl domain 2>/dev/null)" || return 3
+  while IFS= read -r line; do
+    [[ "$line" == *:* ]] || continue
+    values="${line#*:}"
+    for candidate in $values; do
+      [[ "$candidate" == ~* ]] && continue
+      candidate="${candidate%.}"
+      valid_dns_domain "$candidate" || return 2
+      candidate="${candidate,,}"
+      if [[ -n "$domain" && "$candidate" != "$domain" ]]; then return 2; fi
+      domain="$candidate"
+    done
+  done <<<"$raw"
+  [[ -n "$domain" ]] || return 4
+  printf '%s\n' "$domain"
+}
+
+resolve_dns_search_domain() {
+  local resolv_conf="$1" domain status
+  if domain="$(resolve_resolv_conf_search_domain "$resolv_conf")"; then
+    printf '%s\n' "$domain"
+    return 0
+  fi
+  status=$?
+  [[ "$status" -eq 4 ]] || return "$status"
+  resolve_resolvectl_search_domain
 }
 
 query_dns_txt() {
@@ -232,9 +264,18 @@ decode_dns_txt_line() {
 }
 
 resolve_dns_channel_binding() {
-  local domain records line payload binding
+  local domain records line payload binding domain_status
   local -a lines=()
-  domain="$(resolve_dns_search_domain /etc/resolv.conf)" || return 5
+  if domain="$(resolve_dns_search_domain /etc/resolv.conf)"; then
+    :
+  else
+    domain_status=$?
+    case "$domain_status" in
+      2) return 2 ;;
+      4) return 6 ;;
+      *) return 5 ;;
+    esac
+  fi
   records="$(query_dns_txt "_pki.$domain")" || {
     local dns_query_status=$?
     [[ "$dns_query_status" -eq 3 ]] && return 5
@@ -308,8 +349,8 @@ resolve_target_repository() {
       log_error "HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_INVALID: DNS channel binding is malformed or ambiguous; account fallback is suppressed."
       return 1
       ;;
-    3|4|5)
-      # Missing or unavailable DNS metadata may use the explicit local account map.
+    3|4|5|6)
+      # Missing DNS metadata, unavailable DNS, or no local resolver domain may use the explicit local account map.
       ;;
     *)
       log_error "HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_UNKNOWN: unexpected DNS resolver status."
