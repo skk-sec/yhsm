@@ -220,8 +220,9 @@ resolve_dns_search_domain() {
   if domain="$(resolve_resolv_conf_search_domain "$resolv_conf")"; then
     printf '%s\n' "$domain"
     return 0
+  else
+    status=$?
   fi
-  status=$?
   [[ "$status" -eq 4 ]] || return "$status"
   resolve_resolvectl_search_domain
 }
