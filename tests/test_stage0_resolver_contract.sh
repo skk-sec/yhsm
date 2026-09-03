@@ -49,9 +49,11 @@ RELEASE_CHANNEL=""
 LAB_MODE=""
 ACCOUNT_CHANNEL_MAP="$tmp/account-map"
 resolve_dns_channel_binding() { return 6; }
-resolve_account_channel_binding() { printf 'y-hsm/gev\tv2.1.0-rc.4\t1\n'; }
+resolve_account_channel_binding() { printf 'example-owner/customer-channel\tv2.1.0-rc.4\t1\n'; }
 resolve_target_repository
 [[ "$TARGET_RESOLUTION" == "explicit-account-map" ]] ||
   fail "missing-domain status did not use the explicit account map"
+[[ "$TARGET_REPO" == "example-owner/customer-channel" ]] ||
+  fail "account map did not retain its exact customer target"
 
 printf '%s\n' 'PASS: Stage-0 resolver contract'
