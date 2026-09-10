@@ -15,6 +15,10 @@ TARGET_BRANCH="$DEFAULT_TARGET_BRANCH"
 WORKDIR="$DEFAULT_WORKDIR"
 TARGET_VISIBILITY="private"
 DRY_RUN=0
+FORGET_AUTH=0
+AUTH_CACHE_LOCK_FD=""
+AUTH_CACHE_PARENT=""
+AUTH_CACHE_REUSED=0
 ISSUE_SMOKE_TEST=0
 SMOKE_ISSUE_REPO=""
 SMOKE_ISSUE_NUMBER=""
@@ -528,6 +532,7 @@ Options:
   --public-target              Public target: GitHub login is not required.
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
+  --forget-auth                Forget this OS user's cached Stage-0 logins and stop.
   --dry-run                    Print the plan only; no package install, auth, clone or issue write.
   -h, --help                   Show this help.
 
@@ -545,6 +550,225 @@ Stage-0 scope:
   - Never enumerates repositories from the authenticated GitHub account.
   - Never creates a GitHub Issue before target binding and authentication.
 USAGE
+}
+
+safe_tmpfs_parent() {
+  local run_user="/run/user/$EUID"
+  if [[ -d "$run_user" && ! -L "$run_user" ]] &&
+     [[ "$(stat -c '%u' -- "$run_user" 2>/dev/null || true)" == "$EUID" ]] &&
+     [[ "$(stat -f -c '%T' -- "$run_user" 2>/dev/null || true)" == "tmpfs" ]]; then
+    printf '%s\n' "$run_user"
+    return 0
+  fi
+  if [[ -d /dev/shm && ! -L /dev/shm ]] &&
+     [[ "$(stat -f -c '%T' -- /dev/shm 2>/dev/null || true)" == "tmpfs" ]]; then
+    printf '%s\n' /dev/shm
+    return 0
+  fi
+  return 1
+}
+
+auth_cache() {
+  python3 - "$@" <<'PY_AUTH_CACHE'
+import base64
+import fcntl
+import hashlib
+import json
+import os
+import re
+import resource
+import stat
+import sys
+import time
+import uuid
+
+TTL = 8 * 60 * 60
+LIMIT = 128 * 1024
+UID = os.geteuid()
+
+def checked(fd, directory=False):
+    s = os.fstat(fd)
+    if s.st_uid != UID or stat.S_IMODE(s.st_mode) != (0o700 if directory else 0o600):
+        raise ValueError('unsafe permissions')
+    if directory:
+        if not stat.S_ISDIR(s.st_mode):
+            raise ValueError('not directory')
+    elif not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or s.st_size > LIMIT:
+        raise ValueError('unsafe file')
+    return fd
+
+def open_file(root, name, flags=os.O_RDONLY):
+    return checked(os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=root))
+
+def read_file(root, name):
+    fd = open_file(root, name)
+    with os.fdopen(fd, 'rb') as stream:
+        value = stream.read(LIMIT + 1)
+    if len(value) > LIMIT:
+        raise ValueError('oversize')
+    return value
+
+def clock():
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+def boot():
+    with open('/proc/sys/kernel/random/boot_id', encoding='ascii') as stream:
+        return stream.read().strip()
+
+def valid(data, repository):
+    return (data['version'] == 1 and data['uid'] == UID and data['host'] == 'github.com'
+            and data['repository'] == repository and data['boot'] == boot()
+            and isinstance(data['created'], (int, float))
+            and 0 <= clock() - data['created'] < TTL
+            and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}', data['account']) is not None)
+
+def atomic_write(root, name, value):
+    tmp = '.pending-' + uuid.uuid4().hex
+    fd = open_file(root, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(value)
+        os.replace(tmp, name, src_dir_fd=root, dst_dir_fd=root)
+    finally:
+        try:
+            os.unlink(tmp, dir_fd=root)
+        except FileNotFoundError:
+            pass
+
+def reap(root, name, generation, created):
+    # Independent of the producer shell, customer cleanup, and wall-clock changes.
+    pid = os.fork()
+    if pid:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        maxfd = min(resource.getrlimit(resource.RLIMIT_NOFILE)[0], 1048576)
+        os.closerange(0, root)
+        os.closerange(root + 1, maxfd)
+        while True:
+            time.sleep(min(60, max(0.1, created + TTL - clock())))
+            try:
+                current = json.loads(read_file(root, name))
+                if current['generation'] != generation:
+                    break
+                if clock() - created < TTL:
+                    continue
+                lock = open_file(root, 'lock')
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    current = json.loads(read_file(root, name))
+                    if current['generation'] == generation:
+                        os.unlink(name, dir_fd=root)
+                    break
+                except BlockingIOError:
+                    time.sleep(1)
+                finally:
+                    os.close(lock)
+            except (OSError, ValueError, KeyError):
+                break
+    finally:
+        os._exit(0)
+
+def main():
+    action, parent, repository, session, account = sys.argv[1:]
+    os.umask(0o077)
+    # Validate the parent independently, including the shared tmpfs sticky bit.
+    pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    ps = os.fstat(pfd)
+    if not ((ps.st_uid == UID and not ps.st_mode & 0o022)
+            or (ps.st_uid == 0 and ps.st_mode & stat.S_ISVTX)):
+        raise ValueError('unsafe parent')
+    root_name = 'yhsm-stage0-auth-' + str(UID)
+    try:
+        os.mkdir(root_name, 0o700, dir_fd=pfd)
+    except FileExistsError:
+        pass
+    root = checked(os.open(root_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd), True)
+    os.close(pfd)
+    if action == 'prepare':
+        os.close(open_file(root, 'lock', os.O_RDWR | os.O_CREAT))
+        return 0
+    # Bash holds this same lock across load, browser login and store. Verify its
+    # inherited descriptor still refers to this root's checked lock inode.
+    lockfd = int(os.environ['YHSM_STAGE0_LOCK_FD'])
+    expected = open_file(root, 'lock')
+    try:
+        if (os.fstat(lockfd).st_dev, os.fstat(lockfd).st_ino) != (os.fstat(expected).st_dev, os.fstat(expected).st_ino):
+            raise ValueError('lock changed')
+    finally:
+        os.close(expected)
+    if action == 'forget':
+        for name in os.listdir(root):
+            if re.fullmatch(r'[a-f0-9]{64}\.json', name):
+                read_file(root, name)
+                os.unlink(name, dir_fd=root)
+        return 0
+    name = hashlib.sha256(repository.lower().encode()).hexdigest() + '.json'
+    if action == 'load':
+        try:
+            data = json.loads(read_file(root, name))
+        except FileNotFoundError:
+            return 10
+        if not valid(data, repository.lower()):
+            os.unlink(name, dir_fd=root)
+            return 10
+        payload = base64.b64decode(data['hosts'], validate=True)
+        target = checked(os.open(session, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW), True)
+        fd = open_file(target, 'hosts.yml', os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(payload)
+        print(data['account'])
+        return 0
+    if action == 'save':
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}', account):
+            raise ValueError('invalid account')
+        source = checked(os.open(session, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW), True)
+        payload = read_file(source, 'hosts.yml')
+        data = dict(version=1, uid=UID, host='github.com', repository=repository.lower(),
+                    account=account, boot=boot(), created=clock(), generation=uuid.uuid4().hex,
+                    hosts=base64.b64encode(payload).decode('ascii'))
+        encoded = json.dumps(data).encode()
+        if len(encoded) > LIMIT:
+            raise ValueError('oversize')
+        atomic_write(root, name, encoded)
+        reap(root, name, data['generation'], data['created'])
+        return 0
+    raise ValueError('unknown operation')
+
+try:
+    sys.exit(main())
+except (OSError, ValueError, KeyError, TypeError):
+    # Never print credential data or exceptions containing JSON/YAML input.
+    print('GitHub session cache could not be verified; no login started.', file=sys.stderr)
+    sys.exit(1)
+PY_AUTH_CACHE
+}
+
+lock_auth_cache() {
+  command -v python3 >/dev/null && command -v flock >/dev/null || {
+    log_error "python3 and flock are required for the bounded GitHub session."; return 1;
+  }
+  AUTH_CACHE_PARENT="$(safe_tmpfs_parent)" || return 1
+  auth_cache prepare "$AUTH_CACHE_PARENT" "" "" "" || return 1
+  exec {AUTH_CACHE_LOCK_FD}<"$AUTH_CACHE_PARENT/yhsm-stage0-auth-$EUID/lock" || return 1
+  flock -n "$AUTH_CACHE_LOCK_FD" || {
+    log_error "Another Stage-0 authentication is active; retry after it finishes."
+    exec {AUTH_CACHE_LOCK_FD}<&-
+    return 1
+  }
+  export YHSM_STAGE0_LOCK_FD="$AUTH_CACHE_LOCK_FD"
+}
+
+unlock_auth_cache() {
+  if [[ -n "${AUTH_CACHE_LOCK_FD:-}" ]]; then
+    flock -u "$AUTH_CACHE_LOCK_FD" || true
+    exec {AUTH_CACHE_LOCK_FD}<&-
+    AUTH_CACHE_LOCK_FD=""
+  fi
+  unset YHSM_STAGE0_LOCK_FD
 }
 
 print_argv_banner "$@"
@@ -577,6 +801,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --issue-smoke-test)
       ISSUE_SMOKE_TEST=1
+      shift
+      ;;
+    --forget-auth)
+      FORGET_AUTH=1
       shift
       ;;
     --dry-run)
@@ -636,6 +864,18 @@ reject_github_token_environment() {
 }
 
 reject_github_token_environment
+
+if [[ "$FORGET_AUTH" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log_info "(dry-run) forget this OS user's cached Stage-0 GitHub sessions and stop"
+    exit 0
+  fi
+  lock_auth_cache || exit 1
+  auth_cache forget "$AUTH_CACHE_PARENT" "" "" "" || { unlock_auth_cache; exit 1; }
+  unlock_auth_cache
+  log_ok "Cached Stage-0 GitHub sessions forgotten; active customer runs and OS keyring logins are unchanged."
+  exit 0
+fi
 
 reject_git_repository_environment() {
   local name
@@ -1038,6 +1278,8 @@ ensure_sudo_auth() {
 }
 
 missing_packages=()
+command -v python3 >/dev/null 2>&1 || missing_packages+=(python3)
+command -v flock >/dev/null 2>&1 || missing_packages+=(util-linux)
 command -v git >/dev/null 2>&1 || missing_packages+=(git)
 if [[ -z "$TARGET_REPO" ]] && ! command -v dig >/dev/null 2>&1; then missing_packages+=(dnsutils); fi
 if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then missing_packages+=(ca-certificates); fi
@@ -1909,21 +2151,6 @@ verify_normal_auth_state_unchanged() {
   fi
 }
 
-safe_tmpfs_parent() {
-  local run_user="/run/user/$EUID"
-  if [[ -d "$run_user" && ! -L "$run_user" ]] &&
-     [[ "$(stat -c '%u' -- "$run_user" 2>/dev/null || true)" == "$EUID" ]] &&
-     [[ "$(stat -f -c '%T' -- "$run_user" 2>/dev/null || true)" == "tmpfs" ]]; then
-    printf '%s\n' "$run_user"
-    return 0
-  fi
-  if [[ -d /dev/shm && ! -L /dev/shm ]] &&
-     [[ "$(stat -f -c '%T' -- /dev/shm 2>/dev/null || true)" == "tmpfs" ]]; then
-    printf '%s\n' /dev/shm
-    return 0
-  fi
-  return 1
-}
 
 start_session_auth() {
   local mode
@@ -2393,6 +2620,7 @@ cleanup_stage0() {
   local rc=$?
   if [[ "$CLEANUP_ACTIVE" -eq 1 ]]; then return "$rc"; fi
   CLEANUP_ACTIVE=1
+  unlock_auth_cache || true
   cleanup_ignored_paths_record || true
   cleanup_issue_smoke_test || true
   cleanup_session_auth_best_effort || true
@@ -2406,11 +2634,20 @@ trap 'forward_termination_signal INT 130' INT
 trap 'forward_termination_signal TERM 143' TERM
 
 run_gh_session_login() {
-  local session_hosts mode child_rc
+  local session_hosts mode child_rc cached_account="" current_account=""
+  lock_auth_cache || return 1
   start_session_auth || return 1
-  log_info "Starting session-only GitHub Device/Web authentication."
+  if cached_account="$(auth_cache load "$AUTH_CACHE_PARENT" "$TARGET_REPO" "$GH_CONFIG_DIR" "")"; then
+    AUTH_CACHE_REUSED=1
+    log_info "Reusing the GitHub session within its fixed eight-hour window; verifying access."
+  else
+    child_rc=$?
+    [[ "$child_rc" -eq 10 ]] || return "$child_rc"
+    AUTH_CACHE_REUSED=0
+    log_info "Starting session-only GitHub Device/Web authentication (valid for eight hours)."
+  fi
 
-  if run_gh_headless_device_login "$SESSION_ROOT" --insecure-storage; then
+  if [[ "$AUTH_CACHE_REUSED" -eq 1 ]] || run_gh_headless_device_login "$SESSION_ROOT" --insecure-storage; then
     :
   else
     child_rc=$?
@@ -2430,10 +2667,22 @@ run_gh_session_login() {
     :
   else
     child_rc=$?
-    log_error "Session-only GitHub authentication could not be verified."
+    log_error "GitHub authentication could not be verified. Cached login retained; check connectivity or use --forget-auth before signing in again."
     return "$child_rc"
   fi
 
+  if capture_interruptible_child current_account gh api user --jq .login 2>/dev/null; then
+    [[ "$current_account" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || return 1
+  else
+    log_error "GitHub account could not be verified; cached login retained."
+    return 1
+  fi
+  if [[ "$AUTH_CACHE_REUSED" -eq 1 ]]; then
+    [[ "$current_account" == "$cached_account" ]] || { log_error "Cached GitHub account mismatch."; return 1; }
+  else
+    auth_cache save "$AUTH_CACHE_PARENT" "$TARGET_REPO" "$GH_CONFIG_DIR" "$current_account" || return 1
+  fi
+  unlock_auth_cache
   run_interruptible_child gh auth setup-git --hostname github.com || return $?
   log_ok "Session-only GitHub authentication verified in RAM-backed storage."
 }
@@ -2995,4 +3244,3 @@ fi
 
 log_info "Next: read the cloned repository documentation and follow only documented preflight/install steps."
 log_ok "Stage-0 onboarding complete."
-
