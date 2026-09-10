@@ -19,10 +19,12 @@ bootstrap.sh: OK
 After verification, the normal E2E path is one command:
 
 ```sh
-bash ./bootstrap.sh
+PYTHONDONTWRITEBYTECODE=1 bash ./bootstrap.sh
 ```
 
 The normal run resolves and clones the authorized customer repository, verifies the Stage-0 handoff, and automatically starts its executable `run/bootstrap.sh` entrypoint. A second manual customer-bootstrap invocation is not required.
+
+This README is the complete executable customer instruction. No preliminary host, user, shell, working-directory, management-path or authorization reply is required. `PYTHONDONTWRITEBYTECODE=1` prevents Python bytecode cache files from modifying an original R12.1 checkout and is safe to retain for later qualified packages. After the run, provide only sanitized feedback through the separately provided private GitHub issue channel.
 
 The optional planning check is separate:
 
@@ -41,7 +43,7 @@ Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host. A 
 For the normal private onboarding path, the execution step is intentionally short:
 
 ```sh
-bash ./bootstrap.sh
+PYTHONDONTWRITEBYTECODE=1 bash ./bootstrap.sh
 ```
 
 `--dry-run` is optional and is not a prerequisite for the normal E2E path.
