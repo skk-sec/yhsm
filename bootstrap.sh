@@ -2346,6 +2346,8 @@ run_interruptible_child() {
   local rc child_pid
 
   ACTIVE_CHILD_PID="pending"
+  # Explicit fd 0 inheritance prevents Bash from assigning /dev/null to this
+  # asynchronous child when job control is off (including customer consent).
   (
     if [[ "${ACTIVE_CHILD_SIGNAL_DEFER:-0}" -eq 1 ]]; then
       # Registration-critical children must also survive HUP/INT/TERM delivered
@@ -2357,7 +2359,7 @@ run_interruptible_child() {
       trap - HUP INT TERM
     fi
     exec "$@"
-  ) &
+  ) <&0 &
   child_pid=$!
   ACTIVE_CHILD_PID="$child_pid"
 
