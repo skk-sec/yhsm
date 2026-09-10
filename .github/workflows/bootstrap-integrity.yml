@@ -8,6 +8,7 @@ on:
       - README.md
       - bootstrap.sh
       - .github/workflows/bootstrap-integrity.yml
+      - 'tests/**'
   push:
     branches:
       - main
@@ -15,6 +16,7 @@ on:
       - README.md
       - bootstrap.sh
       - .github/workflows/bootstrap-integrity.yml
+      - 'tests/**'
 
 permissions:
   contents: read
@@ -87,3 +89,8 @@ jobs:
           print(f"bootstrap_sha256={actual}")
           print("integrity=OK")
           PY
+      - name: Verify customer-independent public entry contract
+        run: python3 tests/test_public_entry_contract.py
+      - name: Verify resolver contract
+        shell: bash
+        run: bash tests/test_stage0_resolver_contract.sh
