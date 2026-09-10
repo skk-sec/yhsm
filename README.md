@@ -24,7 +24,7 @@ PYTHONDONTWRITEBYTECODE=1 bash ./bootstrap.sh
 
 The normal run resolves and clones the authorized customer repository, verifies the Stage-0 handoff, and automatically starts its executable `run/bootstrap.sh` entrypoint. A second manual customer-bootstrap invocation is not required.
 
-This README is the complete executable customer instruction. No preliminary host, user, shell, working-directory, management-path or authorization reply is required. `PYTHONDONTWRITEBYTECODE=1` prevents Python bytecode cache files from modifying an original R12.1 checkout and is safe to retain for later qualified packages. After the run, provide only sanitized feedback through the separately provided private GitHub issue channel.
+This README is the complete executable instruction for every authorized pilot channel. No preliminary host, user, shell, working-directory, management-path or authorization reply is required. `PYTHONDONTWRITEBYTECODE=1` prevents downstream Python validators from leaving bytecode cache files in a verified checkout and is safe for all qualified customer packages. After the run, provide only sanitized feedback through the separately provided private GitHub issue channel.
 
 The optional planning check is separate:
 
