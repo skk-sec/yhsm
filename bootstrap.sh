@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# An already prepared local candidate never enters ordinary Stage-0 onboarding.
+# The client owns validation, the single-use RAM handoff and child cleanup.
+for stage0_arg in "$@"; do
+  if [[ "$stage0_arg" == --stage0-candidate || "$stage0_arg" == --stage0-produce-candidate ]]; then
+    stage0_client="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../client" && pwd)/bootstrap.sh"
+    [[ -f "$stage0_client" && ! -L "$stage0_client" ]] || exit 2
+    exec bash "$stage0_client" "$@"
+  fi
+done
+
 DEFAULT_TARGET_BRANCH="main"
 DEFAULT_WORKDIR="${HOME}/git"
 GH_KEYRING_URL="https://cli.github.com/packages/githubcli-archive-keyring.gpg"
@@ -16,6 +26,7 @@ WORKDIR="$DEFAULT_WORKDIR"
 TARGET_VISIBILITY="private"
 DRY_RUN=0
 FORGET_AUTH=0
+ACCEPT_PILOT_LICENSES=""
 AUTH_CACHE_LOCK_FD=""
 AUTH_CACHE_PARENT=""
 AUTH_CACHE_REUSED=0
@@ -26,11 +37,19 @@ SESSION_AUTH_ACTIVE=0
 SESSION_ROOT=""
 SESSION_PARENT=""
 SESSION_HANDOFF_FILE=""
+# Retained compatibility state for the extracted handoff contract.
+# shellcheck disable=SC2034
 SESSION_HANDOFF_ACTIVE=0
 HANDOFF_REAPER_PID=""
+# Retained compatibility state for the extracted handoff contract.
+# shellcheck disable=SC2034
 HANDOFF_PUBLISHING=0
 # Compatibility markers for the Stage-0 handoff candidate contract.
+# Retained compatibility state for the extracted handoff contract.
+# shellcheck disable=SC2034
 STAGE0_HANDOFF_CANDIDATE_FILE=""
+# Retained compatibility state for the extracted handoff contract.
+# shellcheck disable=SC2034
 STAGE0_HANDOFF_CANDIDATE_ROOT=""
 CLEANUP_ACTIVE=0
 ORIGINAL_HOME=""
@@ -511,6 +530,180 @@ log_warn() { printf '[!] %s\n' "$*"; }
 log_ok() { printf '[+] %s\n' "$*"; }
 log_error() { printf '[-] %s\n' "$*" >&2; }
 
+# Keep these texts byte-identical to the two authoritative LICENSE sources.
+# Embedded copies keep the one-file bootstrap readable before network/authentication.
+show_stage0_license() {
+  cat <<'STAGE0_LICENSE_TEXT'
+YHSM STAGE-0 BOOTSTRAP — INTERIM PROPRIETARY PILOT TERMS
+Copyright (c) 2026 blankbox GmbH. All rights reserved.
+
+This file governs only the public Stage-0 bootstrap material distributed from the public YHSM bootstrap repository during the pilot phase.
+
+Subject to prior authorization by blankbox GmbH for a specific pilot or evaluation, permission is granted to the authorized evaluator to:
+- view the Stage-0 material;
+- download the Stage-0 material; and
+- install and execute the Stage-0 material solely for that authorized pilot or evaluation.
+
+Except where mandatory law provides otherwise, permission is not granted to:
+- modify or create derivative works from the Stage-0 material;
+- redistribute, publish, mirror, sublicense, sell, rent, lease or otherwise provide the Stage-0 material to third parties;
+- independently or generally reuse the Stage-0 material for commercial purposes outside the specifically authorized pilot or evaluation; or
+- use the Stage-0 material to provide a competing product, managed service, hosting service or service-bureau offering.
+
+Nothing in these terms is intended to restrict repository hosting, access-control, security, archival or other platform functionality that GitHub must provide under its own terms to operate the authorized repository. Such platform functionality does not grant a recipient any additional license right.
+
+No ownership or exclusive right is transferred. All rights not expressly granted remain reserved by blankbox GmbH.
+
+The Stage-0 material is pilot software and may be incomplete or contain defects. No support, maintenance, service level, production-readiness or fitness commitment is provided unless separately agreed in writing. Mandatory statutory rights and liabilities remain unaffected.
+
+These are interim pilot terms. Final legal review and final product licensing remain pending and may result in replacement terms for later releases or productive use.
+STAGE0_LICENSE_TEXT
+}
+
+show_customer_pilot_license() {
+  cat <<'CUSTOMER_LICENSE_TEXT'
+YHSM PROPRIETÄRE KUNDEN-PILOTLIZENZ — INTERIM
+Lizenzkennung: YHSM-PROPRIETARY-PILOT-INTERIM-1.0
+Copyright (c) 2026 blankbox GmbH. Alle Rechte vorbehalten.
+
+Status: OWNER-RISIKOAKZEPTANZ FÜR VERTRAUENSWÜRDIGE PILOTKUNDEN — ABSCHLIESSENDE JURISTISCHE PRÜFUNG AUSSTEHEND
+
+Lizenzgeberin ist die blankbox GmbH, Hafenstraße 20, 55118 Mainz, Deutschland, Amtsgericht Mainz HRB 48068.
+
+1. ZULÄSSIGE NUTZUNG
+
+Einem von blankbox GmbH ausdrücklich autorisierten Pilotkunden wird für die Dauer der freigegebenen Pilot-/Evaluierungsphase ein beschränktes, widerrufliches, nicht ausschließliches, nicht übertragbares und nicht unterlizenzierbares Recht eingeräumt, die im kundenspezifischen privaten GitHub-Repository bereitgestellten YHSM-Pilotmaterialien ausschließlich für die eigene interne, nicht produktive YubiHSM-/Customer-MCA-Evaluierung zu:
+
+- anzusehen;
+- herunterzuladen;
+- zu installieren; und
+- auszuführen.
+
+Die Berechtigung gilt ausschließlich für den benannten Kunden und dessen eigene interne Pilot-/Evaluierungsumgebung.
+
+2. NICHT EINGERÄUMTE RECHTE
+
+Soweit zwingendes Recht nicht ausdrücklich etwas anderes bestimmt, ist insbesondere nicht gestattet:
+
+- die Pilotmaterialien zu verändern oder abgeleitete Werke zu erstellen;
+- die Pilotmaterialien zu veröffentlichen, weiterzugeben, zu spiegeln, zu vervielfältigen oder Dritten zugänglich zu machen, soweit dies nicht technisch zwingend für die autorisierte interne Nutzung erforderlich ist;
+- die Pilotmaterialien zu unterlizenzieren, zu verkaufen, zu vermieten, zu verleasen oder zu übertragen;
+- die Pilotmaterialien für Wiederverkauf, Managed Services, Hosting, Service-Bureau-Leistungen oder sonstige kommerzielle Wiederverwertung außerhalb des ausdrücklich autorisierten Kundenpiloten zu verwenden;
+- Quellcode-, Eigentums-, Herkunfts-, Lizenz-, Integritäts-, Checksum- oder Sicherheitshinweise zu entfernen oder zu verändern;
+- Zugriff auf interne Entwicklungsrepositories, nicht bereitgestellten Quellcode oder nicht ausdrücklich freigegebene Kundenkanäle abzuleiten.
+
+3. KUNDEN- UND KANALISOLATION
+
+Der Zugriff auf ein kundenspezifisches Repository gewährt ausschließlich Rechte an den dort ausdrücklich bereitgestellten Pilotmaterialien. Er gewährt insbesondere keinen Zugriff und keine Rechte an internen Entwicklungsrepositories oder an Repository-Kanälen anderer Kunden.
+
+4. PILOTSTATUS
+
+Die Pilotmaterialien sind Vorab-/Evaluierungsstände und können Fehler, Sicherheitsrisiken oder unvollständige Funktionen enthalten. Produktiver Betrieb ist durch diese Interim-Lizenz nicht freigegeben.
+
+Es besteht kein Anspruch auf Support, Wartung, Service Level, Updates, Fehlerbehebung, Weiterentwicklung oder dauerhafte Verfügbarkeit, soweit dies nicht separat in Textform vereinbart wurde.
+
+5. GEWÄHRLEISTUNG UND HAFTUNG
+
+Eine Garantie für Fehlerfreiheit, Verfügbarkeit, Interoperabilität, Produktivbereitschaft oder bestimmte Ergebnisse wird nicht übernommen, soweit nicht ausdrücklich separat in Textform vereinbart. Zwingende gesetzliche Rechte und Haftungstatbestände bleiben unberührt.
+
+6. FEEDBACK
+
+Nicht vertrauliches Feedback, Fehlerberichte und Verbesserungsvorschläge dürfen von blankbox GmbH unentgeltlich zur Weiterentwicklung der eigenen Produkte und Leistungen verwendet werden. Vertrauliche Informationen, personenbezogene Daten, Zugangsdaten, Schlüsselmaterial und identifizierende Kundenevidenz werden dadurch nicht zur Offenlegung freigegeben.
+
+7. DAUER UND BEENDIGUNG
+
+Die Interim-Berechtigung gilt für höchstens neunzig (90) Kalendertage ab bestätigter Bereitstellung, sofern sie nicht vorher durch eine neue Lizenz, eine schriftliche Vereinbarung oder eine Beendigung durch blankbox GmbH ersetzt oder beendet wird.
+
+Nach Ende der Berechtigung ist die Nutzung einzustellen und es sind nicht mehr erforderliche Kopien zu löschen, soweit keine zwingende gesetzliche oder vereinbarte Aufbewahrungspflicht entgegensteht.
+
+8. RECHTSVORBEHALT
+
+Alle nicht ausdrücklich eingeräumten Rechte verbleiben bei blankbox GmbH oder ihren jeweiligen Lizenzgebern. Diese Interim-Fassung ist eine vom Owner bewusst für den vertrauenswürdigen Pilotbetrieb freigegebene Risikolösung; sie ist keine Aussage über den Abschluss der noch ausstehenden juristischen Prüfung und keine Freigabe für produktive Nutzung, Reseller-/Partnerrechte oder allgemeine Distribution.
+
+9. ANWENDBARES RECHT
+
+Es gilt deutsches Recht unter Ausschluss des UN-Kaufrechts (CISG), soweit zulässig. Zwingende gesetzliche Regelungen bleiben unberührt.
+
+Interim-Status:
+OwnerRiskAcceptance=true
+TrustedPilotCustomerRequired=true
+View=true
+Download=true
+Install=true
+Execute=true
+Modify=false
+Redistribute=false
+Sublicense=false
+CommercialReuse=false
+ThirdPartyTransfer=false
+ProductiveUse=false
+FinalLegalReview=not-completed
+CUSTOMER_LICENSE_TEXT
+}
+
+show_pilot_licenses() {
+  show_stage0_license
+  show_customer_pilot_license
+}
+
+pilot_license_digest() {
+  local record
+  record="$(show_pilot_licenses | sha256sum)" || return 1
+  printf '%s\n' "${record%% *}"
+}
+
+show_pilot_notice() {
+  log_info "YHSM Pilot: proprietaere Stage-0- und Kunden-Pilotlizenz; nur autorisierte, nicht produktive Evaluierung."
+  if [[ "${YHSM_AUTOMATIC_ISSUE_FEEDBACK:-}" == 1 ]]; then
+    log_info "Diagnose-Feedback: AN (bestehendes Opt-in). Bereinigte Version/Support-ID/Status/Fehlerklasse im autorisierten privaten GitHub-Kundenrepository."
+  else
+    log_info "Diagnose-Feedback: AUS. Keine automatischen Supportmeldungen ohne separates Opt-in."
+  fi
+  log_info "Logs/Support: keine automatischen Voll-Log- oder Datei-Uploads. Freigegebene Supportdaten dienen der Fehleranalyse; zusaetzliche Logs vor Weitergabe auf sensible Daten pruefen."
+  log_info "Die Lizenzzustimmung aendert weder Feedback-Einstellung noch HSM-/Zielsystemfreigaben. Abschliessende juristische Pruefung ausstehend."
+}
+
+require_pilot_license_acceptance() {
+  local digest answer=""
+  digest="$(pilot_license_digest)" || return 1
+  show_pilot_notice
+  if [[ -n "$ACCEPT_PILOT_LICENSES" ]]; then
+    [[ "$ACCEPT_PILOT_LICENSES" == "$digest" ]] || {
+      log_error "Lizenzdigest stimmt nicht; keine Zustimmung fuer diese Texte."
+      return 1
+    }
+  else
+    [[ -t 0 && -t 1 ]] || {
+      log_error "Lizenzzustimmung erforderlich: interaktives Terminal oder --accept-pilot-licenses mit dem exakten Digest aus --show-licenses."
+      return 1
+    }
+    while true; do
+      printf 'Beiden Pilotlizenzen zustimmen? [j/N/d=Texte]: '
+      IFS= read -r answer || { log_error "Keine Lizenzzustimmung (EOF)."; return 1; }
+      case "${answer,,}" in
+        j|ja|y|yes) break ;;
+        d) show_pilot_licenses ;;
+        *) log_error "Keine Lizenzzustimmung; Stage-0 beendet."; return 1 ;;
+      esac
+    done
+  fi
+  log_ok "PilotLicenseAcceptance=accepted digest=$digest scope=this-run"
+}
+
+verify_customer_pilot_license() {
+  local license="$1/LICENSE" expected actual
+  [[ -f "$license" && ! -L "$license" ]] || {
+    log_error "Kundenlizenz fehlt oder ist kein regulaeres Dokument; Kundenstart gestoppt."
+    return 1
+  }
+  expected="$(show_customer_pilot_license | sha256sum)" || return 1
+  actual="$(sha256sum -- "$license")" || return 1
+  [[ "${actual%% *}" == "${expected%% *}" ]] || {
+    log_error "Kundenlizenz weicht von der akzeptierten Fassung ab; Kundenstart gestoppt."
+    return 1
+  }
+}
+
 usage() {
   cat <<'USAGE'
 Customer YubiHSM Stage-0 Bootstrap
@@ -532,7 +725,13 @@ Options:
   --public-target              Public target: GitHub login is not required.
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
+  --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
+  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
   --forget-auth                Forget this OS user's cached Stage-0 logins and stop.
+  --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
+                               requires --install-dir, consumes an existing RAM handoff.
+  --stage0-produce-candidate   Fresh RAM-only login/handoff, then only that consumer.
+                               No manual identity, repository or version operands.
   --dry-run                    Print the plan only; no package install, auth, clone or issue write.
   -h, --help                   Show this help.
 
@@ -748,9 +947,9 @@ PY_AUTH_CACHE
 }
 
 lock_auth_cache() {
-  command -v python3 >/dev/null && command -v flock >/dev/null || {
-    log_error "python3 and flock are required for the bounded GitHub session."; return 1;
-  }
+  if ! command -v python3 >/dev/null || ! command -v flock >/dev/null; then
+    log_error "python3 and flock are required for the bounded GitHub session."; return 1
+  fi
   AUTH_CACHE_PARENT="$(safe_tmpfs_parent)" || return 1
   auth_cache prepare "$AUTH_CACHE_PARENT" "" "" "" || return 1
   exec {AUTH_CACHE_LOCK_FD}<"$AUTH_CACHE_PARENT/yhsm-stage0-auth-$EUID/lock" || return 1
@@ -802,6 +1001,19 @@ while [[ $# -gt 0 ]]; do
     --issue-smoke-test)
       ISSUE_SMOKE_TEST=1
       shift
+      ;;
+    --show-licenses)
+      show_pilot_licenses
+      printf 'PilotLicenseDigest=%s\n' "$(pilot_license_digest)"
+      exit 0
+      ;;
+    --accept-pilot-licenses)
+      [[ $# -ge 2 && "${2:-}" =~ ^[0-9a-f]{64}$ && -z "$ACCEPT_PILOT_LICENSES" ]] || {
+        log_error "--accept-pilot-licenses requires one exact lowercase SHA-256."
+        exit 2
+      }
+      ACCEPT_PILOT_LICENSES="$2"
+      shift 2
       ;;
     --forget-auth)
       FORGET_AUTH=1
@@ -1248,6 +1460,8 @@ log_info "IssueSmokeTest=$([[ "$ISSUE_SMOKE_TEST" -eq 1 ]] && echo enabled || ec
 log_info "Workdir=<local-path>"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
+  show_pilot_notice
+  log_info "(dry-run) require explicit acceptance of the exact pilot license texts before installation or login"
   log_info "(dry-run) install ca-certificates, dnsutils and git if missing"
   if [[ "$TARGET_VISIBILITY" == "private" ]]; then
     log_info "(dry-run) install GitHub CLI from the official signed Debian repository if missing"
@@ -1264,6 +1478,8 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log_ok "Stage-0 dry-run complete; no changes performed."
   exit 0
 fi
+
+require_pilot_license_acceptance || exit 1
 
 ensure_sudo_auth() {
   if [[ "$EUID" -eq 0 ]]; then SUDO=(); return; fi
@@ -2197,6 +2413,8 @@ revoke_session_handoff() {
   [[ -z "$SESSION_HANDOFF_FILE" || ! -e "$SESSION_HANDOFF_FILE" || -L "$SESSION_HANDOFF_FILE" ]] || rm -f -- "$SESSION_HANDOFF_FILE" || true
   remove_owned_session_root "$root" "$parent" || true
   SESSION_HANDOFF_FILE=""
+  # Retained compatibility state for the extracted handoff contract.
+  # shellcheck disable=SC2034
   SESSION_HANDOFF_ACTIVE=0
   SESSION_AUTH_ACTIVE=0
   SESSION_ROOT=""
@@ -2251,6 +2469,8 @@ start_session_handoff_reaper() {
 }
 
 handoff_publish_fail() {
+  # Retained compatibility state for the extracted handoff contract.
+  # shellcheck disable=SC2034
   HANDOFF_PUBLISHING=0
   SIGNAL_DEFER_EXIT=0
   revoke_session_handoff
@@ -2260,6 +2480,8 @@ handoff_publish_fail() {
 publish_session_handoff() {
   local path now expires tmp
   SIGNAL_DEFER_EXIT=1
+  # Retained compatibility state for the extracted handoff contract.
+  # shellcheck disable=SC2034
   HANDOFF_PUBLISHING=1
   [[ "$SESSION_AUTH_ACTIVE" -eq 1 && -n "$SESSION_ROOT" && -n "$SESSION_PARENT" ]] || { handoff_publish_fail; return; }
   path="$(stage0_session_handoff_path)" || { handoff_publish_fail; return; }
@@ -2291,10 +2513,14 @@ publish_session_handoff() {
   fi
   rm -f -- "$tmp" || { handoff_publish_fail; return; }
   SESSION_HANDOFF_FILE="$path"
+  # Retained compatibility state for the extracted handoff contract.
+  # shellcheck disable=SC2034
   SESSION_HANDOFF_ACTIVE=1
   restore_original_auth_environment || { handoff_publish_fail; return; }
   SESSION_AUTH_ACTIVE=0
   start_session_handoff_reaper "$expires"
+  # Retained compatibility state for the extracted handoff contract.
+  # shellcheck disable=SC2034
   HANDOFF_PUBLISHING=0
   SIGNAL_DEFER_EXIT=0
   if [[ "$PENDING_SIGNAL_STATUS" -ne 0 ]]; then
@@ -3221,6 +3447,10 @@ run_issue_smoke_test() {
 }
 
 if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
+
+if [[ -f "$dest_path/client/manifest.json" ]]; then
+  verify_customer_pilot_license "$dest_path" || exit 1
+fi
 
 if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then
   verify_session_postconditions "$dest_path" || exit 1

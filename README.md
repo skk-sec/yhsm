@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/c09004de990bab288952fbd91f8a5b505a50fc0e/bootstrap.sh && echo '73d901807758cd31f564e30f2c8a586ccb9057d074041d4d2a884ff795a3e747  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/5b0d6b8796bd7889268cfc8e914b4df269577888/bootstrap.sh && echo '33ff20614f52510910b7f64cb271a42d3f4d62f3a8a82686ee868fb9f9d53ceb  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -81,3 +81,32 @@ No general support, maintenance, service level, production-readiness, or Yubico 
 ## Third-party material
 
 This Stage-0 package contains only `bootstrap.sh`, this README, and the proprietary `LICENSE`. It does not bundle third-party source, binaries, fonts, media, or copied documentation. The script downloads or invokes separately distributed system tools from their official channels; those tools remain governed by their own terms. Therefore no `THIRD_PARTY_NOTICES` artifact is required for this exact package.
+
+## License and diagnostics notice
+
+Normal Stage-0 asks for one confirmation before package
+installation, DNS lookup and GitHub login. It covers the existing Stage-0 pilot
+terms and the existing customer interim pilot terms together. Enter `d` to read
+both full texts, `j` or `yes` to accept, or Enter/`n` to stop. EOF also stops.
+Acceptance is for this execution only; it does not create a persistent consent
+file or authorize a new customer, productive use or target-system action.
+
+`--show-licenses` prints the embedded exact texts and their combined SHA-256
+without authentication or installation. Noninteractive normal Stage-0 requires
+explicit `--accept-pilot-licenses <sha256>` matching those texts; a piped yes or
+a generic confirmation flag is insufficient. `--help`, `--dry-run` and the
+existing `--forget-auth` recovery path do not require or record acceptance.
+The isolated local Candidate lane retains its existing separate contract.
+
+The notice reports the existing execution-feedback setting. Only the literal
+`YHSM_AUTOMATIC_ISSUE_FEEDBACK=1` enables that separate customer feature.
+License acceptance never changes it. Enabled feedback uses sanitized technical
+status metadata in the authorized private GitHub repository for diagnostics;
+it does not automatically upload full logs or files. Additional support logs
+must be checked for sensitive data before sharing. This is not an anonymity
+claim, blanket upload consent or a new data-retention policy.
+
+Before a normal customer package starts, its root `LICENSE` must match the
+embedded customer terms byte for byte. Missing, changed or symlinked terms stop
+the customer handoff instead of silently accepting a different license.
+The license texts themselves and the pending final legal-review status are unchanged.
