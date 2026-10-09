@@ -2232,15 +2232,29 @@ EOF
 }
 
 run_gh_headless_device_login() {
-  local helper_root="$1" browser_helper child_rc=0 cleanup_rc=0
+  local helper_root="$1" browser_helper child_rc=0 cleanup_rc=0 login_help=""
+  local -a clipboard_args=()
   shift
+
+  # Headless login displays the code for manual copying on the workstation.
+  # Older gh versions without clipboard support must not receive an unknown flag.
+  if capture_interruptible_child login_help gh auth login --help; then
+    if [[ "$login_help" == *"--clipboard"* ]]; then
+      clipboard_args=(--clipboard=false)
+    fi
+  else
+    child_rc=$?
+    log_error "Unable to inspect GitHub CLI login options."
+    return "$child_rc"
+  fi
+
   browser_helper="$(make_headless_gh_browser_helper "$helper_root")" || return 1
 
   log_info "Headless GitHub Device authentication: no browser will be opened on this server."
   log_info "Copy the one-time code shown by GitHub CLI, then open https://github.com/login/device in a normal browser on your workstation and enter the code there."
   log_info "If GitHub CLI asks to press Enter to open a browser, press Enter; Stage-0 intercepts that handoff and keeps the server headless."
 
-  if run_interruptible_child env "GH_BROWSER=$browser_helper" "BROWSER=$browser_helper" gh auth login --hostname github.com --git-protocol https --web "$@"; then
+  if run_interruptible_child env "GH_BROWSER=$browser_helper" "BROWSER=$browser_helper" gh auth login --hostname github.com --git-protocol https --web "$@" "${clipboard_args[@]}"; then
     child_rc=0
   else
     child_rc=$?

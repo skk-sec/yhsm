@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/5b0d6b8796bd7889268cfc8e914b4df269577888/bootstrap.sh && echo '33ff20614f52510910b7f64cb271a42d3f4d62f3a8a82686ee868fb9f9d53ceb  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3bcbfa3e4d6f864f06a678d9cccc881d488338c8/bootstrap.sh && echo 'b404512dcb2d53d3cebf6b234236dd34270b7a25802512e1efcda269f7ff894e  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -49,6 +49,9 @@ PYTHONDONTWRITEBYTECODE=1 bash ./bootstrap.sh
 `--dry-run` is optional and is not a prerequisite for the normal E2E path.
 
 The normal path derives the local DNS search domain from `/etc/resolv.conf` and, when present, the local `resolvectl` resolver state before it reads `_pki.<domain>` TXT. It accepts exactly one complete, valid binding containing `repo`, `release_channel`, and `lab_mode=1`. Canonical DNS TXT bindings may be semicolon-terminated `key=value` fields split across quoted TXT chunks; only documented metadata keys are accepted, and duplicates, unknown keys, malformed delimiters or missing `schema=1` are rejected. DNS `repo` must use the canonical `https://github.com/<owner>/<repository>` form; shorthand `owner/repository` is not accepted in DNS. The exact endpoint is bound by the authorized DNS channel. DNS binds only the intended pilot channel; it does not grant or prove access. Malformed, incomplete, duplicate, conflicting, ambiguous, non-lab, or DNS-error responses fail closed. The bootstrap ensures the `dig` resolver tool is present before this lookup.
+
+
+During headless Device/Web login, Stage-0 disables clipboard copying when the installed GitHub CLI supports that option. Copy the displayed one-time code manually on your workstation; no server clipboard package is needed. Login errors and cancellation remain visible.
 
 Only after that target is resolved does GitHub Device/Web authentication run. GitHub is used solely to verify repository and issue-read access to the exact DNS-bound target. Stage-0 never enumerates or selects repositories from the general GitHub account.
 
