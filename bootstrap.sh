@@ -1,6 +1,1066 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# BEGIN GENERATED OPERATOR UI
+#!/usr/bin/env bash
+
+# Gemeinsame Shell-Hilfsfunktionen für Startausgabe, Secret-Masking und UTF-8-Setup.
+
+yhsm_is_sensitive_name() {
+  local lower="${1,,}"
+  [[ "$lower" =~ (token|pass(word)?|secret|key|auth|credential|cookie|pin) ]]
+}
+
+yhsm_is_contract_status() {
+  case "$1" in
+    PASS|WARN|BLOCKED|UNKNOWN) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+yhsm_is_sensitive_value() {
+  local value="$1"
+  local lower="${value,,}"
+
+  case "$value" in
+    *$'\n'*|*$'\r'*) return 0 ;;
+  esac
+
+  if yhsm_is_contract_status "$value"; then
+    return 1
+  fi
+
+  if [[ "$value" =~ ^([^=[:space:]]+)=(.*)$ ]]; then
+    local key="${BASH_REMATCH[1]}"
+    if yhsm_is_sensitive_name "$key"; then
+      return 0
+    fi
+  fi
+  if [[ "$value" =~ ^gh[pousr]_[A-Za-z0-9_]{8,}$ ]]; then
+    return 0
+  fi
+  if [[ "$value" =~ ^github_pat_[A-Za-z0-9_]{8,}$ ]]; then
+    return 0
+  fi
+  if [[ "$value" =~ ^xox[baprs]-[A-Za-z0-9-]{8,}$ ]]; then
+    return 0
+  fi
+  if [[ "$value" =~ ^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+    return 0
+  fi
+  if [[ "$lower" =~ ^bearer[[:space:]]+.+$ ]]; then
+    return 0
+  fi
+
+  # Preserve the historical conservative marker fallback for arbitrary/rejected
+  # values while explicitly exempting the finite contractual status enum above.
+  if yhsm_is_sensitive_name "$lower"; then
+    return 0
+  fi
+  return 1
+}
+
+yhsm_mask_argv_arg() {
+  local arg="$1"
+  if [[ "$arg" =~ ^([^=]+)=(.*)$ ]]; then
+    local key="${BASH_REMATCH[1]}"
+    local value="${BASH_REMATCH[2]}"
+    if yhsm_is_sensitive_name "$key" || yhsm_is_sensitive_value "$value"; then
+      printf '%s=***' "$key"
+      return
+    fi
+  fi
+  if yhsm_is_sensitive_value "$arg"; then
+    printf '***'
+    return
+  fi
+  printf '%s' "$arg"
+}
+
+yhsm_print_argv_banner() {
+  local script_name="$1"
+  shift || true
+
+  local masked=()
+  local arg
+  local mask_next=0
+  for arg in "$@"; do
+    if [[ "$mask_next" -eq 1 ]]; then
+      masked+=("***")
+      mask_next=0
+      continue
+    fi
+    if [[ "$arg" == -* && "$arg" != *=* ]] && yhsm_is_sensitive_name "$arg"; then
+      masked+=("$arg")
+      mask_next=1
+      continue
+    fi
+    masked+=("$(yhsm_mask_argv_arg "$arg")")
+  done
+  printf '[argv] %s %s\n' "$script_name" "${masked[*]}"
+}
+
+yhsm_ensure_utf8_locale() {
+  export LANG="${LANG:-C.UTF-8}"
+  export LC_ALL="${LC_ALL:-C.UTF-8}"
+}
+
+# Zentrale Farbausgabe für Shell-Skripte im Repository.
+# Profile:
+# - high-contrast (Default): hohe Lesbarkeit auf dunklen Terminals
+# - classic: klassische ANSI-Farben
+# - mono: keine Farben
+
+yhsm_colors_enabled=0
+yhsm_color_profile="${YHSM_COLOR_PROFILE:-high-contrast}"
+yhsm_color_info='38;5;117'
+yhsm_color_warn='1;93'
+yhsm_color_success='1;92'
+yhsm_color_error='1;91'
+
+yhsm_init_colors() {
+  yhsm_colors_enabled=0
+  if [ -t 1 ] && [ -z "${NO_COLOR-}" ]; then
+    yhsm_colors_enabled=1
+  fi
+
+  case "${YHSM_COLOR_PROFILE:-$yhsm_color_profile}" in
+    high-contrast)
+      yhsm_color_profile='high-contrast'
+      yhsm_color_info='38;5;117'
+      yhsm_color_warn='1;93'
+      yhsm_color_success='1;92'
+      yhsm_color_error='1;91'
+      ;;
+    classic)
+      yhsm_color_profile='classic'
+      yhsm_color_info='34'
+      yhsm_color_warn='33'
+      yhsm_color_success='32'
+      yhsm_color_error='31'
+      ;;
+    mono)
+      yhsm_color_profile='mono'
+      yhsm_colors_enabled=0
+      ;;
+    *)
+      yhsm_color_profile='high-contrast'
+      yhsm_color_info='38;5;117'
+      yhsm_color_warn='1;93'
+      yhsm_color_success='1;92'
+      yhsm_color_error='1;91'
+      ;;
+  esac
+}
+
+yhsm_color_wrap() {
+  local code="$1"
+  shift
+  if [ "${yhsm_colors_enabled:-0}" -eq 1 ]; then
+    printf '\033[%sm%s\033[0m' "$code" "$*"
+  else
+    printf '%s' "$*"
+  fi
+}
+
+# shellcheck disable=SC2317
+yhsm_log_info() {
+  yhsm_color_wrap "${yhsm_color_info:-38;5;117}" "[*] $*"
+  printf '\n'
+}
+
+# shellcheck disable=SC2317
+yhsm_log_warn() {
+  yhsm_color_wrap "${yhsm_color_warn:-1;93}" "[!] $*"
+  printf '\n'
+}
+
+# shellcheck disable=SC2317
+yhsm_log_success() {
+  yhsm_color_wrap "${yhsm_color_success:-1;92}" "[+] $*"
+  printf '\n'
+}
+
+# shellcheck disable=SC2317
+yhsm_log_error() {
+  yhsm_color_wrap "${yhsm_color_error:-1;91}" "[-] $*" >&2
+  printf '\n' >&2
+}
+
+#!/usr/bin/env bash
+# shellcheck disable=SC2154
+# Color variables are assigned by the required shared yhsm_init_colors helper.
+# Source-only presentation functions. No package, locale, keyboard or trust mutation.
+yhsm_ui_init() {
+  local locale_name candidate rest
+  case "${YHSM_UI_LANGUAGE:-}" in de|en) ;; *)
+    locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
+    YHSM_UI_LANGUAGE=en
+    case "${locale_name,,}" in c|c.*|posix) ;; *)
+      rest="${LANGUAGE:-$locale_name}"
+      while [[ -n "$rest" ]]; do
+        candidate="${rest%%:*}"
+        case "${candidate,,}" in
+          de|de_*|de-*|de.*|de@*) YHSM_UI_LANGUAGE=de; break ;;
+          en|en_*|en-*|en.*|en@*) YHSM_UI_LANGUAGE=en; break ;;
+        esac
+        [[ "$rest" == *:* ]] || break
+        rest="${rest#*:}"
+      done
+      ;;
+    esac
+    ;;
+  esac
+  export YHSM_UI_LANGUAGE
+  yhsm_init_colors
+}
+
+yhsm_ui_format() {
+  local template="$1" marker index
+  shift
+  local values=("$@")
+  while [[ "$template" =~ \{([0-9]+)\} ]]; do
+    marker="${BASH_REMATCH[0]}"
+    index="${BASH_REMATCH[1]}"
+    printf '%s' "${template%%"$marker"*}" "${values[$index]:-}"
+    template="${template#*"$marker"}"
+  done
+  printf '%s' "$template"
+}
+
+yhsm_ui_prompt() {
+  yhsm_color_wrap "$yhsm_color_warn" "$(yhsm_ui_text "$1")"
+}
+yhsm_ui_heading() {
+  printf '\n'
+  yhsm_color_wrap "1;$yhsm_color_info" "$(yhsm_ui_text "$1")"
+  printf '\n'
+}
+yhsm_ui_affirmative() {
+  case "${1,,}" in j|ja|y|yes) return 0 ;; *) return 1 ;; esac
+}
+yhsm_ui_log() {
+  local level="$1" text enabled="${yhsm_colors_enabled:-0}" color
+  shift
+  text="$(yhsm_ui_translate "$*")"
+  case "$level" in
+    info) color="$yhsm_color_info" ;;
+    warn) color="$yhsm_color_warn" ;;
+    success) color="$yhsm_color_success" ;;
+    error)
+      color="$yhsm_color_error"
+      [[ -t 2 ]] || yhsm_colors_enabled=0
+      yhsm_color_wrap "$color" "[-] $text" >&2
+      printf '\n' >&2
+      yhsm_colors_enabled="$enabled"
+      return ;;
+  esac
+  case "$level" in info) text="[*] $text" ;; warn) text="[!] $text" ;; success) text="[+] $text" ;; esac
+  yhsm_color_wrap "$color" "$text"
+  printf '\n'
+}
+yhsm_log_info() { yhsm_ui_log info "$@"; }
+yhsm_log_warn() { yhsm_ui_log warn "$@"; }
+yhsm_log_success() { yhsm_ui_log success "$@"; }
+yhsm_log_error() { yhsm_ui_log error "$@"; }
+
+# shellcheck shell=bash
+# Generated from operator-messages.json; do not edit.
+yhsm_ui_text() {
+  case "${YHSM_UI_LANGUAGE:-en}:$1" in
+    en:message.000) printf '%s' 'HARD_FAIL_STAGE0_LAB_MODE_REQUIRED: channel binding must declare lab_mode=1.' ;;
+    de:message.000) printf '%s' 'HARD_FAIL_STAGE0_LAB_MODE_REQUIRED: Die Kanalbindung muss lab_mode=1 angeben.' ;;
+    en:message.001) printf '%s' 'HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_INVALID: DNS channel binding is malformed or ambiguous; account fallback is suppressed.' ;;
+    de:message.001) printf '%s' 'HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_INVALID: Die DNS-Kanalbindung ist fehlerhaft oder mehrdeutig; kein Konten-Fallback.' ;;
+    en:message.002) printf '%s' 'HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_UNKNOWN: unexpected DNS resolver status.' ;;
+    de:message.002) printf '%s' 'HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_UNKNOWN: Unerwarteter Status des DNS-Resolvers.' ;;
+    en:message.003) printf '%s' 'HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: no valid DNS binding or explicit unique account-to-channel mapping is available.' ;;
+    de:message.003) printf '%s' 'HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: Keine gültige DNS-Bindung oder eindeutige lokale Kontenzuordnung verfügbar.' ;;
+    en:message.004) printf '%s' 'Use --target-repo owner/repository only as an explicit recovery override.' ;;
+    de:message.004) printf '%s' '--target-repo owner/repository nur als ausdrücklichen Wiederherstellungs-Override verwenden.' ;;
+    en:message.005) printf '%s' 'YHSM pilot: proprietary Stage-0 and customer pilot licences; authorized non-production evaluation only.' ;;
+    de:message.005) printf '%s' 'YHSM Pilot: proprietäre Stage-0- und Kunden-Pilotlizenz; nur autorisierte, nicht produktive Evaluierung.' ;;
+    en:message.006) printf '%s' 'Diagnostic feedback: ON (existing opt-in). Sanitized version/support ID/status/failure class in the authorized private GitHub customer repository.' ;;
+    de:message.006) printf '%s' 'Diagnose-Feedback: AN (bestehendes Opt-in). Bereinigte Version/Support-ID/Status/Fehlerklasse im autorisierten privaten GitHub-Kundenrepository.' ;;
+    en:message.007) printf '%s' 'Diagnostic feedback: OFF. No automatic support messages without separate opt-in.' ;;
+    de:message.007) printf '%s' 'Diagnose-Feedback: AUS. Keine automatischen Supportmeldungen ohne separates Opt-in.' ;;
+    en:message.008) printf '%s' 'Logs/support: no automatic full-log or file uploads. Approved support data is used for troubleshooting; check additional logs for sensitive data before sharing.' ;;
+    de:message.008) printf '%s' 'Logs/Support: keine automatischen Voll-Log- oder Datei-Uploads. Freigegebene Supportdaten dienen der Fehleranalyse; zusätzliche Logs vor Weitergabe auf sensible Daten prüfen.' ;;
+    en:message.009) printf '%s' 'Licence acceptance changes neither feedback settings nor HSM/target authorization. Final legal review remains pending.' ;;
+    de:message.009) printf '%s' 'Die Lizenzzustimmung ändert weder Feedback-Einstellung noch HSM-/Zielsystemfreigaben. Abschließende juristische Prüfung ausstehend.' ;;
+    en:message.010) printf '%s' 'Licence digest mismatch; these texts have not been accepted.' ;;
+    de:message.010) printf '%s' 'Lizenzdigest stimmt nicht; keine Zustimmung für diese Texte.' ;;
+    en:message.011) printf '%s' 'Licence acceptance required: interactive terminal or --accept-pilot-licenses with the exact digest from --show-licenses.' ;;
+    de:message.011) printf '%s' 'Lizenzzustimmung erforderlich: interaktives Terminal oder --accept-pilot-licenses mit dem exakten Digest aus --show-licenses.' ;;
+    en:message.012) printf '%s' 'No licence acceptance (EOF).' ;;
+    de:message.012) printf '%s' 'Keine Lizenzzustimmung (EOF).' ;;
+    en:message.013) printf '%s' 'No licence acceptance; Stage-0 stopped.' ;;
+    de:message.013) printf '%s' 'Keine Lizenzzustimmung; Stage-0 beendet.' ;;
+    en:message.014) printf '%s' 'PilotLicenseAcceptance=accepted digest={0} scope=this-run' ;;
+    de:message.014) printf '%s' 'PilotLicenseAcceptance=accepted digest={0} scope=this-run' ;;
+    en:message.015) printf '%s' 'Customer licence missing or not a regular document; customer startup stopped.' ;;
+    de:message.015) printf '%s' 'Kundenlizenz fehlt oder ist kein reguläres Dokument; Kundenstart gestoppt.' ;;
+    en:message.016) printf '%s' 'Customer licence differs from the accepted text; customer startup stopped.' ;;
+    de:message.016) printf '%s' 'Kundenlizenz weicht von der akzeptierten Fassung ab; Kundenstart gestoppt.' ;;
+    en:message.017) printf '%s' 'python3 and flock are required for the bounded GitHub session.' ;;
+    de:message.017) printf '%s' 'python3 und flock werden für die zeitlich begrenzte GitHub-Sitzung benötigt.' ;;
+    en:message.018) printf '%s' 'Another Stage-0 authentication is active; retry after it finishes.' ;;
+    de:message.018) printf '%s' 'Eine andere Stage-0-Anmeldung läuft bereits; nach ihrem Ende erneut versuchen.' ;;
+    en:message.019) printf '%s' '--target-repo requires a repository operand.' ;;
+    de:message.019) printf '%s' '--target-repo benötigt ein Repository.' ;;
+    en:message.020) printf '%s' 'Target repository may be specified only once.' ;;
+    de:message.020) printf '%s' 'Das Zielrepository darf nur einmal angegeben werden.' ;;
+    en:message.021) printf '%s' '--target-branch requires a branch operand.' ;;
+    de:message.021) printf '%s' '--target-branch benötigt einen Branch.' ;;
+    en:message.022) printf '%s' '--workdir requires a path operand.' ;;
+    de:message.022) printf '%s' '--workdir benötigt einen Pfad.' ;;
+    en:message.023) printf '%s' '--accept-pilot-licenses requires one exact lowercase SHA-256.' ;;
+    de:message.023) printf '%s' '--accept-pilot-licenses benötigt genau einen SHA-256 in Kleinbuchstaben.' ;;
+    en:message.024) printf '%s' 'Unknown option (value redacted).' ;;
+    de:message.024) printf '%s' 'Unbekannte Option (Wert maskiert).' ;;
+    en:message.025) printf '%s' 'Unexpected positional operand; use --target-repo owner/repository only for recovery.' ;;
+    de:message.025) printf '%s' 'Unerwartetes Positionsargument; --target-repo owner/repository nur zur Wiederherstellung verwenden.' ;;
+    en:message.026) printf '%s' 'Invalid --target-repo.' ;;
+    de:message.026) printf '%s' 'Ungültiges --target-repo.' ;;
+    en:message.027) printf '%s' '--target-repo contains a sensitive-shaped value and is rejected.' ;;
+    de:message.027) printf '%s' '--target-repo enthält einen möglicherweise sensiblen Wert und wird verworfen.' ;;
+    en:message.028) printf '%s' 'Invalid --target-branch.' ;;
+    de:message.028) printf '%s' 'Ungültiges --target-branch.' ;;
+    en:message.029) printf '%s' '--target-branch contains a sensitive-shaped value and is rejected.' ;;
+    de:message.029) printf '%s' '--target-branch enthält einen möglicherweise sensiblen Wert und wird verworfen.' ;;
+    en:message.030) printf '%s' 'Invalid target visibility.' ;;
+    de:message.030) printf '%s' 'Ungültige Repository-Sichtbarkeit.' ;;
+    en:message.031) printf '%s' '--workdir must not be empty.' ;;
+    de:message.031) printf '%s' '--workdir darf nicht leer sein.' ;;
+    en:message.032) printf '%s' 'Invalid --workdir.' ;;
+    de:message.032) printf '%s' 'Ungültiges --workdir.' ;;
+    en:message.033) printf '%s' '--workdir contains a sensitive-shaped value and is rejected.' ;;
+    de:message.033) printf '%s' '--workdir enthält einen möglicherweise sensiblen Wert und wird verworfen.' ;;
+    en:message.034) printf '%s' '--issue-smoke-test requires --private-target in the current pilot contract.' ;;
+    de:message.034) printf '%s' '--issue-smoke-test benötigt im aktuellen Pilotvertrag --private-target.' ;;
+    en:message.035) printf '%s' '{0} is set; private Stage-0 requires GitHub Device/Web authentication. Unset the variable and retry.' ;;
+    de:message.035) printf '%s' '{0} ist gesetzt; privates Stage-0 benötigt GitHub Device/Web-Anmeldung. Variable entfernen und erneut versuchen.' ;;
+    en:message.036) printf '%s' '(dry-run) forget this OS user'"'"'s cached Stage-0 GitHub sessions and stop' ;;
+    de:message.036) printf '%s' '(Plan) Anmeldecache dieses OS-Benutzers löschen und beenden' ;;
+    en:message.037) printf '%s' 'Cached Stage-0 GitHub sessions forgotten; active customer runs and OS keyring logins are unchanged.' ;;
+    de:message.037) printf '%s' 'Stage-0-Anmeldecache gelöscht; aktive Kundenläufe und OS-Schlüsselbund-Anmeldungen bleiben unverändert.' ;;
+    en:message.038) printf '%s' '{0} is set; Stage-0 refuses repository-local Git environment overrides. Unset the variable and retry.' ;;
+    de:message.038) printf '%s' '{0} ist gesetzt; Stage-0 verwirft repositorylokale Git-Umgebungs-Overrides. Variable entfernen und erneut versuchen.' ;;
+    en:message.039) printf '%s' 'Unable to probe Git configuration capability safely; refusing Stage-0 onboarding.' ;;
+    de:message.039) printf '%s' 'Git-Konfigurationsfähigkeit nicht sicher prüfbar; Stage-0 gestoppt.' ;;
+    en:message.040) printf '%s' 'Git 2.26 or newer is required to inspect an existing clone safely; upgrade Git or use a fresh workdir.' ;;
+    de:message.040) printf '%s' 'Git ab 2.26 benötigt, um einen bestehenden Klon sicher zu prüfen; Git aktualisieren oder ein neues Arbeitsverzeichnis verwenden.' ;;
+    en:message.041) printf '%s' 'Existing clone has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust.' ;;
+    de:message.041) printf '%s' 'Bestehender Klon enthält lokale Git-Includes; keine bedingte Ausführung vor der Vertrauensprüfung.' ;;
+    en:message.042) printf '%s' 'Unable to inspect Git include configuration directly; refusing Stage-0 onboarding.' ;;
+    de:message.042) printf '%s' 'Git-Include-Konfiguration nicht direkt prüfbar; Stage-0 gestoppt.' ;;
+    en:message.043) printf '%s' 'An initialized submodule has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust.' ;;
+    de:message.043) printf '%s' 'Initialisiertes Submodul enthält lokale Git-Includes; keine bedingte Ausführung vor der Vertrauensprüfung.' ;;
+    en:message.044) printf '%s' 'A registered submodule root is a symbolic link; refusing repository-context submodule inspection before trust.' ;;
+    de:message.044) printf '%s' 'Registriertes Submodul ist ein symbolischer Link; keine Prüfung im Repositorykontext vor der Vertrauensprüfung.' ;;
+    en:message.045) printf '%s' 'Unable to inspect initialized-submodule Git include configuration directly; refusing Stage-0 onboarding.' ;;
+    de:message.045) printf '%s' 'Git-Includes initialisierter Submodule nicht direkt prüfbar; Stage-0 gestoppt.' ;;
+    en:message.046) printf '%s' 'Unable to inspect Git execution configuration; refusing Stage-0 onboarding.' ;;
+    de:message.046) printf '%s' 'Git-Ausführungskonfiguration nicht prüfbar; Stage-0 gestoppt.' ;;
+    en:message.047) printf '%s' 'Unable to parse Git execution configuration; refusing Stage-0 onboarding.' ;;
+    de:message.047) printf '%s' 'Git-Ausführungskonfiguration nicht lesbar; Stage-0 gestoppt.' ;;
+    en:message.048) printf '%s' 'Existing clone has repository-local or worktree Git execution configuration or HTTP proxy/TLS override (filter, credential helper, worktree redirection, or transport override); refusing to inspect, authenticate, or update it.' ;;
+    de:message.048) printf '%s' 'Bestehender Klon enthält lokale Git-Ausführungs- oder HTTP-Proxy/TLS-Overrides; keine Prüfung, Anmeldung oder Aktualisierung.' ;;
+    en:message.049) printf '%s' 'Unable to bind initialized-submodule inspection files to the protected session root; refusing Stage-0 onboarding.' ;;
+    de:message.049) printf '%s' 'Prüfdateien initialisierter Submodule nicht an den geschützten Sitzungsbereich bindbar; Stage-0 gestoppt.' ;;
+    en:message.050) printf '%s' 'Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding.' ;;
+    de:message.050) printf '%s' 'Git-Ausführungskonfiguration initialisierter Submodule nicht prüfbar; Stage-0 gestoppt.' ;;
+    en:message.051) printf '%s' 'An initialized submodule has repository-local or worktree Git execution configuration or HTTP transport override; refusing parent worktree inspection or authenticated fetch.' ;;
+    de:message.051) printf '%s' 'Initialisiertes Submodul enthält lokale Git-Ausführungs- oder HTTP-Overrides; keine Worktree-Prüfung oder authentifizierte Aktualisierung.' ;;
+    en:message.052) printf '%s' 'Unsupported host: /etc/os-release is missing.' ;;
+    de:message.052) printf '%s' 'Nicht unterstütztes System: /etc/os-release fehlt.' ;;
+    en:message.053) printf '%s' 'Stage-0 currently supports Debian/Ubuntu apt-based hosts only.' ;;
+    de:message.053) printf '%s' 'Stage-0 unterstützt derzeit nur Debian/Ubuntu mit APT.' ;;
+    en:message.054) printf '%s' 'Required Stage-0 tool missing: {0}' ;;
+    de:message.054) printf '%s' 'Benötigtes Stage-0-Werkzeug fehlt: {0}' ;;
+    en:message.055) printf '%s' 'Required package manager missing: apt-get' ;;
+    de:message.055) printf '%s' 'Benötigter Paketmanager fehlt: apt-get' ;;
+    en:message.056) printf '%s' 'Required package tool missing: dpkg' ;;
+    de:message.056) printf '%s' 'Benötigtes Paketwerkzeug fehlt: dpkg' ;;
+    en:message.057) printf '%s' '(dry-run) require explicit acceptance of the exact pilot license texts before installation or login' ;;
+    de:message.057) printf '%s' '(Plan) ausdrückliche Zustimmung zu den exakten Pilotlizenzen vor Installation oder Anmeldung einholen' ;;
+    en:message.058) printf '%s' '(dry-run) install ca-certificates, dnsutils and git if missing' ;;
+    de:message.058) printf '%s' '(Plan) fehlende Pakete ca-certificates, dnsutils und git installieren' ;;
+    en:message.059) printf '%s' '(dry-run) install GitHub CLI from the official signed Debian repository if missing' ;;
+    de:message.059) printf '%s' '(Plan) fehlende GitHub CLI aus dem offiziellen signierten Debian-Repository installieren' ;;
+    en:message.060) printf '%s' '(dry-run) prefer and verify a secure system credential store; otherwise use verified RAM-backed session-only auth' ;;
+    de:message.060) printf '%s' '(Plan) sicheren OS-Zugangsdaten-Speicher prüfen; sonst geprüfte RAM-Sitzung verwenden' ;;
+    en:message.061) printf '%s' '(dry-run) authenticate with GitHub device/web flow without opening a local browser; enter the one-time code at https://github.com/login/device from a workstation browser' ;;
+    de:message.061) printf '%s' '(Plan) GitHub Device/Web-Anmeldung ohne Serverbrowser; Einmalcode auf dem Arbeitsplatz unter https://github.com/login/device eingeben' ;;
+    en:message.062) printf '%s' '(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context' ;;
+    de:message.062) printf '%s' '(Plan) gh nur im gewählten persistenten oder temporären Kontext als Git-Zugangsdaten-Hilfe konfigurieren' ;;
+    en:message.063) printf '%s' '(dry-run) verify private repository and issue read access' ;;
+    de:message.063) printf '%s' '(Plan) privaten Repository- und Issue-Lesezugriff prüfen' ;;
+    en:message.064) printf '%s' '(dry-run) clone exact branch '"'"'{0}'"'"' from {1}' ;;
+    de:message.064) printf '%s' '(Plan) exakten Branch '"'"'{0}'"'"' aus {1} klonen' ;;
+    en:message.065) printf '%s' '(dry-run) print repository/branch/head readback' ;;
+    de:message.065) printf '%s' '(Plan) Repository, Branch und Commit zurücklesen' ;;
+    en:message.066) printf '%s' '(dry-run) create, comment, view and close one sanitized temporary GitHub issue' ;;
+    de:message.066) printf '%s' '(Plan) ein bereinigtes temporäres GitHub-Issue erstellen, kommentieren, lesen und schließen' ;;
+    en:message.067) printf '%s' 'Stage-0 dry-run complete; no changes performed.' ;;
+    de:message.067) printf '%s' 'Stage-0-Plan abgeschlossen; keine Änderungen ausgeführt.' ;;
+    en:message.068) printf '%s' 'sudo is required because package installation is needed.' ;;
+    de:message.068) printf '%s' 'sudo wird für die benötigte Paketinstallation benötigt.' ;;
+    en:message.069) printf '%s' 'sudo authorization already active.' ;;
+    de:message.069) printf '%s' 'sudo-Freigabe bereits aktiv.' ;;
+    en:message.070) printf '%s' 'Local sudo authentication is required for package installation.' ;;
+    de:message.070) printf '%s' 'Lokale sudo-Anmeldung wird für die Paketinstallation benötigt.' ;;
+    en:message.071) printf '%s' 'Enter only the local password at the sudo prompt; do not paste further commands until the shell prompt returns.' ;;
+    de:message.071) printf '%s' 'Nur das lokale Passwort am sudo-Prompt eingeben; weitere Befehle erst nach Rückkehr zum Shell-Prompt einfügen.' ;;
+    en:message.072) printf '%s' 'sudo authentication failed; no package installation was started.' ;;
+    de:message.072) printf '%s' 'sudo-Anmeldung fehlgeschlagen; keine Paketinstallation gestartet.' ;;
+    en:message.073) printf '%s' 'sudo authorization did not become non-interactive after authentication.' ;;
+    de:message.073) printf '%s' 'sudo-Freigabe ist nach der Anmeldung nicht ohne weiteren Dialog nutzbar.' ;;
+    en:message.074) printf '%s' 'sudo authorization verified.' ;;
+    de:message.074) printf '%s' 'sudo-Freigabe geprüft.' ;;
+    en:message.075) printf '%s' 'Installing missing client-access packages.' ;;
+    de:message.075) printf '%s' 'Fehlende Pakete für den Repositoryzugriff werden installiert.' ;;
+    en:message.076) printf '%s' 'Baseline client-access packages already present.' ;;
+    de:message.076) printf '%s' 'Basispakete für den Repositoryzugriff sind vorhanden.' ;;
+    en:message.077) printf '%s' 'Git could not resolve the requested GitHub clone URL without contacting the target repository.' ;;
+    de:message.077) printf '%s' 'Git konnte die angeforderte Klon-URL nicht ohne Zielzugriff auflösen.' ;;
+    en:message.078) printf '%s' 'Git URL rewriting is active for the requested GitHub repository; refusing clone or fetch from a substituted remote.' ;;
+    de:message.078) printf '%s' 'Git-URL-Umschreibung aktiv; kein Klonen oder Abrufen aus einem ersetzten Repository.' ;;
+    en:message.079) printf '%s' 'GitHub CLI already present.' ;;
+    de:message.079) printf '%s' 'GitHub CLI ist vorhanden.' ;;
+    en:message.080) printf '%s' 'curl installation did not produce curl before GitHub CLI bootstrap.' ;;
+    de:message.080) printf '%s' 'curl wurde vor dem GitHub-CLI-Bootstrap nicht bereitgestellt.' ;;
+    en:message.081) printf '%s' 'Downloading official GitHub CLI repository keyring.' ;;
+    de:message.081) printf '%s' 'Offizieller GitHub-CLI-Repository-Schlüssel wird heruntergeladen.' ;;
+    en:message.082) printf '%s' 'GitHub CLI keyring download failed.' ;;
+    de:message.082) printf '%s' 'Download des GitHub-CLI-Schlüssels fehlgeschlagen.' ;;
+    en:message.083) printf '%s' 'GitHub CLI keyring SHA-256 verification failed.' ;;
+    de:message.083) printf '%s' 'SHA-256-Prüfung des GitHub-CLI-Schlüssels fehlgeschlagen.' ;;
+    en:message.084) printf '%s' 'GitHub CLI installation did not produce gh.' ;;
+    de:message.084) printf '%s' 'GitHub-CLI-Installation hat gh nicht bereitgestellt.' ;;
+    en:message.085) printf '%s' 'GitHub CLI installed.' ;;
+    de:message.085) printf '%s' 'GitHub CLI installiert.' ;;
+    en:message.086) printf '%s' 'GitHub CLI has a plaintext token in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying.' ;;
+    de:message.086) printf '%s' 'GitHub CLI enthält ein Klartext-Token in ihrer Konfiguration. Mit gh auth logout entfernen und vor erneutem Versuch einen sicheren OS-Zugangsdaten-Speicher einrichten.' ;;
+    en:message.087) printf '%s' 'Secure GitHub credential-backend contract verified.' ;;
+    de:message.087) printf '%s' 'Sicherer GitHub-Zugangsdaten-Speicher geprüft.' ;;
+    en:message.088) printf '%s' 'Headless GitHub browser-helper root is not a safe directory.' ;;
+    de:message.088) printf '%s' 'Verzeichnis der Headless-Browserhilfe ist nicht sicher.' ;;
+    en:message.089) printf '%s' 'Headless GitHub browser helper failed its file-permission contract.' ;;
+    de:message.089) printf '%s' 'Dateiberechtigungen der Headless-Browserhilfe erfüllen den Vertrag nicht.' ;;
+    en:message.090) printf '%s' 'Unable to inspect GitHub CLI login options.' ;;
+    de:message.090) printf '%s' 'GitHub-CLI-Anmeldeoptionen nicht prüfbar.' ;;
+    en:message.091) printf '%s' 'Headless GitHub Device authentication: no browser will be opened on this server.' ;;
+    de:message.091) printf '%s' 'GitHub Device-Anmeldung: Auf diesem Server wird kein Browser geöffnet.' ;;
+    en:message.092) printf '%s' 'Copy the one-time code shown by GitHub CLI, then open https://github.com/login/device in a normal browser on your workstation and enter the code there.' ;;
+    de:message.092) printf '%s' 'Einmalcode aus der GitHub CLI kopieren; https://github.com/login/device im Arbeitsplatzbrowser öffnen und dort eingeben.' ;;
+    en:message.093) printf '%s' 'If GitHub CLI asks to press Enter to open a browser, press Enter; Stage-0 intercepts that handoff and keeps the server headless.' ;;
+    de:message.093) printf '%s' 'Wenn GitHub CLI zum Browserstart auffordert, Enter drücken; Stage-0 fängt den Aufruf ab, der Server bleibt ohne Browser.' ;;
+    en:message.094) printf '%s' 'Unable to remove temporary headless GitHub browser helper.' ;;
+    de:message.094) printf '%s' 'Temporäre Headless-Browserhilfe konnte nicht entfernt werden.' ;;
+    en:message.095) printf '%s' 'GitHub device/web authentication failed or was interrupted; the previous gh configuration was restored.' ;;
+    de:message.095) printf '%s' 'GitHub Device/Web-Anmeldung fehlgeschlagen oder unterbrochen; vorherige gh-Konfiguration wiederhergestellt.' ;;
+    en:message.096) printf '%s' 'GitHub CLI plaintext fallback was removed and the previous gh configuration was restored.' ;;
+    de:message.096) printf '%s' 'GitHub-CLI-Klartext-Fallback entfernt und vorherige gh-Konfiguration wiederhergestellt.' ;;
+    en:message.097) printf '%s' 'Unable to snapshot normal GitHub/Git configuration before session-only authentication.' ;;
+    de:message.097) printf '%s' 'Normale GitHub/Git-Konfiguration vor der RAM-Anmeldung nicht sicher erfassbar.' ;;
+    en:message.098) printf '%s' 'No verified tmpfs is available for session-only GitHub authentication; refusing plaintext fallback.' ;;
+    de:message.098) printf '%s' 'Kein geprüftes tmpfs für die GitHub-Anmeldung verfügbar; Klartext-Fallback verweigert.' ;;
+    en:message.099) printf '%s' 'Secure OS credential store unavailable; using verified RAM-backed session-only GitHub authentication.' ;;
+    de:message.099) printf '%s' 'Kein sicherer OS-Zugangsdaten-Speicher verfügbar; geprüfte GitHub-Sitzung im RAM wird verwendet.' ;;
+    en:message.100) printf '%s' 'A previous live or invalid Stage-0 session handoff is still present; refusing overwrite.' ;;
+    de:message.100) printf '%s' 'Eine gültige oder fehlerhafte Stage-0-Übergabe ist noch vorhanden; kein Überschreiben.' ;;
+    en:message.101) printf '%s' 'Unable to publish the RAM-backed Stage-0 session handoff.' ;;
+    de:message.101) printf '%s' 'RAM-basierte Stage-0-Übergabe konnte nicht bereitgestellt werden.' ;;
+    en:message.102) printf '%s' 'RAM-backed Stage-0 session handoff published; next customer bootstrap must consume it before expiry.' ;;
+    de:message.102) printf '%s' 'RAM-basierte Stage-0-Übergabe bereit; der Kundenbootstrap muss sie vor Ablauf verbrauchen.' ;;
+    en:message.103) printf '%s' 'Reusing the GitHub session within its fixed eight-hour window; verifying access.' ;;
+    de:message.103) printf '%s' 'GitHub-Sitzung innerhalb des festen Acht-Stunden-Fensters wird wiederverwendet; Zugriff wird geprüft.' ;;
+    en:message.104) printf '%s' 'Starting session-only GitHub Device/Web authentication (valid for eight hours).' ;;
+    de:message.104) printf '%s' 'GitHub Device/Web-Anmeldung im RAM wird gestartet (acht Stunden gültig).' ;;
+    en:message.105) printf '%s' 'GitHub session-only device/web authentication failed or was interrupted.' ;;
+    de:message.105) printf '%s' 'GitHub Device/Web-Anmeldung im RAM fehlgeschlagen oder unterbrochen.' ;;
+    en:message.106) printf '%s' 'Session GitHub configuration escaped the RAM-backed session root.' ;;
+    de:message.106) printf '%s' 'GitHub-Konfiguration liegt außerhalb des geprüften RAM-Sitzungsverzeichnisses.' ;;
+    en:message.107) printf '%s' 'Session GitHub configuration was not created as a regular file.' ;;
+    de:message.107) printf '%s' 'GitHub-Sitzungskonfiguration wurde nicht als reguläre Datei erstellt.' ;;
+    en:message.108) printf '%s' 'Session GitHub configuration has an unexpected owner.' ;;
+    de:message.108) printf '%s' 'GitHub-Sitzungskonfiguration hat einen unerwarteten Eigentümer.' ;;
+    en:message.109) printf '%s' 'Session GitHub configuration permissions are too broad.' ;;
+    de:message.109) printf '%s' 'GitHub-Sitzungskonfiguration hat zu weitreichende Berechtigungen.' ;;
+    en:message.110) printf '%s' 'Session-only GitHub authentication did not produce the expected isolated credential record.' ;;
+    de:message.110) printf '%s' 'GitHub-RAM-Anmeldung hat keinen erwarteten isolierten Zugangsdaten-Datensatz erzeugt.' ;;
+    en:message.111) printf '%s' 'GitHub authentication could not be verified. Cached login retained; check connectivity or use --forget-auth before signing in again.' ;;
+    de:message.111) printf '%s' 'GitHub-Anmeldung nicht prüfbar. Cache bleibt erhalten; Verbindung prüfen oder vor neuer Anmeldung --forget-auth verwenden.' ;;
+    en:message.112) printf '%s' 'GitHub account could not be verified; cached login retained.' ;;
+    de:message.112) printf '%s' 'GitHub-Konto nicht prüfbar; Anmeldecache bleibt erhalten.' ;;
+    en:message.113) printf '%s' 'Cached GitHub account mismatch.' ;;
+    de:message.113) printf '%s' 'GitHub-Konto stimmt nicht mit dem Cache überein.' ;;
+    en:message.114) printf '%s' 'Session-only GitHub authentication verified in RAM-backed storage.' ;;
+    de:message.114) printf '%s' 'GitHub-Anmeldung im geprüften RAM-Speicher verifiziert.' ;;
+    en:message.115) printf '%s' 'Normal GitHub/Git configuration changed during session-only onboarding.' ;;
+    de:message.115) printf '%s' 'Normale GitHub/Git-Konfiguration wurde während des temporären Onboardings verändert.' ;;
+    en:message.116) printf '%s' 'Session HOME escaped the RAM-backed session root.' ;;
+    de:message.116) printf '%s' 'Sitzungs-HOME liegt außerhalb des geprüften RAM-Verzeichnisses.' ;;
+    en:message.117) printf '%s' 'Session XDG config escaped the RAM-backed session root.' ;;
+    de:message.117) printf '%s' 'Sitzungs-XDG-Konfiguration liegt außerhalb des geprüften RAM-Verzeichnisses.' ;;
+    en:message.118) printf '%s' 'Session GitHub config escaped the RAM-backed session root.' ;;
+    de:message.118) printf '%s' 'Sitzungs-GitHub-Konfiguration liegt außerhalb des geprüften RAM-Verzeichnisses.' ;;
+    en:message.119) printf '%s' 'Clone retained a repository-local credential helper after session-only onboarding.' ;;
+    de:message.119) printf '%s' 'Klon enthält nach dem temporären Onboarding eine lokale Zugangsdaten-Hilfe.' ;;
+    en:message.120) printf '%s' 'Clone contains an unexpected or credential-bearing origin fetch/push URL; refusing session cleanup readback.' ;;
+    de:message.120) printf '%s' 'Klon enthält eine unerwartete oder zugangsdatenhaltige Origin-URL; Bereinigungsprüfung gestoppt.' ;;
+    en:message.121) printf '%s' 'Session-only authentication postconditions verified.' ;;
+    de:message.121) printf '%s' 'Nachbedingungen der temporären Anmeldung geprüft.' ;;
+    en:message.122) printf '%s' 'Session-only GitHub authentication state removed.' ;;
+    de:message.122) printf '%s' 'Temporäre GitHub-Anmeldedaten entfernt.' ;;
+    en:message.123) printf '%s' 'GitHub authentication already present.' ;;
+    de:message.123) printf '%s' 'GitHub-Anmeldung ist bereits vorhanden.' ;;
+    en:message.124) printf '%s' 'GitHub authentication required for the private repository.' ;;
+    de:message.124) printf '%s' 'GitHub-Anmeldung für das private Repository erforderlich.' ;;
+    en:message.125) printf '%s' 'Authenticated GitHub account identity could not be read.' ;;
+    de:message.125) printf '%s' 'Angemeldetes GitHub-Konto konnte nicht gelesen werden.' ;;
+    en:message.126) printf '%s' 'Authenticated GitHub account identity is invalid.' ;;
+    de:message.126) printf '%s' 'Angemeldetes GitHub-Konto ist ungültig.' ;;
+    en:message.127) printf '%s' 'Authenticated GitHub account cannot access the target repository.' ;;
+    de:message.127) printf '%s' 'Angemeldetes GitHub-Konto hat keinen Zugriff auf das Zielrepository.' ;;
+    en:message.128) printf '%s' 'Authenticated GitHub account cannot read issues in the target repository.' ;;
+    de:message.128) printf '%s' 'Angemeldetes GitHub-Konto kann Issues im Zielrepository nicht lesen.' ;;
+    en:message.129) printf '%s' 'Private repository and issue read access verified.' ;;
+    de:message.129) printf '%s' 'Privater Repository- und Issue-Lesezugriff geprüft.' ;;
+    en:message.130) printf '%s' 'An initialized submodule has Git replacement refs; refusing canonical onboarding readback.' ;;
+    de:message.130) printf '%s' 'Initialisiertes Submodul hat Git-Ersatzreferenzen; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.131) printf '%s' 'An initialized submodule has hidden index flags; refusing canonical onboarding readback.' ;;
+    de:message.131) printf '%s' 'Initialisiertes Submodul hat versteckte Indexflags; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.132) printf '%s' 'An initialized submodule is not clean; refusing canonical onboarding readback.' ;;
+    de:message.132) printf '%s' 'Initialisiertes Submodul enthält lokale Änderungen; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.133) printf '%s' 'Unable to inspect an initialized submodule; refusing canonical onboarding readback.' ;;
+    de:message.133) printf '%s' 'Initialisiertes Submodul nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.134) printf '%s' 'Unable to verify initialized submodule state; refusing canonical onboarding readback.' ;;
+    de:message.134) printf '%s' 'Zustand initialisierter Submodule nicht verifizierbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.135) printf '%s' 'Clone destination exists but is not a Git repository.' ;;
+    de:message.135) printf '%s' 'Klonziel existiert, ist aber kein Git-Repository.' ;;
+    en:message.136) printf '%s' 'Existing clone has an unexpected or credential-bearing origin fetch/push URL.' ;;
+    de:message.136) printf '%s' 'Bestehender Klon enthält eine unerwartete oder zugangsdatenhaltige Origin-URL.' ;;
+    en:message.137) printf '%s' 'Unable to inspect existing clone replacement refs; refusing canonical onboarding readback.' ;;
+    de:message.137) printf '%s' 'Git-Ersatzreferenzen im Klon nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.138) printf '%s' 'Existing clone has Git replacement refs; refusing canonical onboarding readback.' ;;
+    de:message.138) printf '%s' 'Bestehender Klon hat Git-Ersatzreferenzen; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.139) printf '%s' 'Unable to inspect existing clone index flags; refusing canonical onboarding readback.' ;;
+    de:message.139) printf '%s' 'Indexflags im Klon nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.140) printf '%s' 'Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback.' ;;
+    de:message.140) printf '%s' 'Bestehender Klon hat versteckte Indexflags (assume-unchanged/skip-worktree); verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.141) printf '%s' 'Unable to inspect existing clone cleanliness; refusing to modify or report it as canonical.' ;;
+    de:message.141) printf '%s' 'Lokale Änderungen im Klon nicht prüfbar; keine Änderung oder verbindliche Zustandsmeldung.' ;;
+    en:message.142) printf '%s' 'Existing clone is not clean; refusing to modify or report it as canonical.' ;;
+    de:message.142) printf '%s' 'Bestehender Klon enthält lokale Änderungen; keine Änderung oder verbindliche Zustandsmeldung.' ;;
+    en:message.143) printf '%s' 'Existing clean clone found; fetching exact remote branch.' ;;
+    de:message.143) printf '%s' 'Sauberer Klon vorhanden; exakter Remote-Branch wird abgerufen.' ;;
+    en:message.144) printf '%s' 'Unable to resolve the fetched remote branch.' ;;
+    de:message.144) printf '%s' 'Abgerufener Remote-Branch konnte nicht aufgelöst werden.' ;;
+    en:message.145) printf '%s' 'Unable to create the ignored-file inspection record.' ;;
+    de:message.145) printf '%s' 'Prüfdatensatz für ignorierte Dateien konnte nicht erstellt werden.' ;;
+    en:message.146) printf '%s' 'Ignored-file inspection record is not a regular file.' ;;
+    de:message.146) printf '%s' 'Prüfdatensatz für ignorierte Dateien ist keine reguläre Datei.' ;;
+    en:message.147) printf '%s' 'Unable to inspect ignored files in the existing clone.' ;;
+    de:message.147) printf '%s' 'Ignorierte Dateien im Klon nicht prüfbar.' ;;
+    en:message.148) printf '%s' 'Unable to inspect an ignored-file collision against the selected remote branch.' ;;
+    de:message.148) printf '%s' 'Konflikt einer ignorierten Datei mit dem gewählten Remote-Branch nicht prüfbar.' ;;
+    en:message.149) printf '%s' 'Unable to remove the ignored-file inspection record.' ;;
+    de:message.149) printf '%s' 'Prüfdatensatz für ignorierte Dateien konnte nicht entfernt werden.' ;;
+    en:message.150) printf '%s' 'Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state.' ;;
+    de:message.150) printf '%s' 'Ignorierte lokale Datei kollidiert mit dem Remote-Branch; lokaler Zustand wird nicht überschrieben.' ;;
+    en:message.151) printf '%s' 'Unable to inspect the selected local branch ref.' ;;
+    de:message.151) printf '%s' 'Gewählte lokale Branch-Referenz nicht prüfbar.' ;;
+    en:message.152) printf '%s' 'Unable to configure the selected local branch remote.' ;;
+    de:message.152) printf '%s' 'Remote des gewählten lokalen Branches nicht konfigurierbar.' ;;
+    en:message.153) printf '%s' 'Unable to configure the selected local branch merge ref.' ;;
+    de:message.153) printf '%s' 'Merge-Referenz des gewählten lokalen Branches nicht konfigurierbar.' ;;
+    en:message.154) printf '%s' 'Unable to resolve the existing clone head.' ;;
+    de:message.154) printf '%s' 'Commit des bestehenden Klons konnte nicht aufgelöst werden.' ;;
+    en:message.155) printf '%s' 'Unable to inspect existing-clone ancestry.' ;;
+    de:message.155) printf '%s' 'Abstammung des bestehenden Klons nicht prüfbar.' ;;
+    en:message.156) printf '%s' 'Existing clone does not exactly match origin/{0} and cannot be safely fast-forwarded.' ;;
+    de:message.156) printf '%s' 'Bestehender Klon entspricht nicht origin/{0} und lässt sich nicht sicher vorspulen.' ;;
+    en:message.157) printf '%s' 'Unable to resolve the synchronized clone head.' ;;
+    de:message.157) printf '%s' 'Synchronisierter Klon-Commit konnte nicht aufgelöst werden.' ;;
+    en:message.158) printf '%s' 'Unable to resolve the synchronized remote branch.' ;;
+    de:message.158) printf '%s' 'Synchronisierter Remote-Branch konnte nicht aufgelöst werden.' ;;
+    en:message.159) printf '%s' 'Existing clone is not exact to the fetched remote branch.' ;;
+    de:message.159) printf '%s' 'Bestehender Klon entspricht nicht exakt dem abgerufenen Remote-Branch.' ;;
+    en:message.160) printf '%s' 'Unable to inspect clone cleanliness after branch synchronization; refusing canonical onboarding readback.' ;;
+    de:message.160) printf '%s' 'Lokale Änderungen nach Branch-Synchronisierung nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.161) printf '%s' 'Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback.' ;;
+    de:message.161) printf '%s' 'Klon wurde beim Branchwechsel verändert; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.162) printf '%s' 'Cloning customer repository.' ;;
+    de:message.162) printf '%s' 'Kundenrepository wird geklont.' ;;
+    en:message.163) printf '%s' 'Unable to inspect final clone index flags; refusing canonical onboarding readback.' ;;
+    de:message.163) printf '%s' 'Endgültige Indexflags nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.164) printf '%s' 'Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback.' ;;
+    de:message.164) printf '%s' 'Klon hat versteckte Indexflags (assume-unchanged/skip-worktree); verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.165) printf '%s' 'Unable to inspect clone replacement refs; refusing canonical onboarding readback.' ;;
+    de:message.165) printf '%s' 'Endgültige Git-Ersatzreferenzen nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.166) printf '%s' 'Clone has Git replacement refs; refusing canonical onboarding readback.' ;;
+    de:message.166) printf '%s' 'Klon hat Git-Ersatzreferenzen; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.167) printf '%s' 'Unable to inspect final clone cleanliness; refusing canonical onboarding readback.' ;;
+    de:message.167) printf '%s' 'Endgültige lokale Änderungen nicht prüfbar; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.168) printf '%s' 'Clone is dirty after checkout; refusing canonical onboarding readback.' ;;
+    de:message.168) printf '%s' 'Klon enthält nach Checkout lokale Änderungen; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.169) printf '%s' 'Clone did not produce the requested remote branch; tags cannot satisfy --target-branch.' ;;
+    de:message.169) printf '%s' 'Klon enthält nicht den angeforderten Remote-Branch; Tags erfüllen --target-branch nicht.' ;;
+    en:message.170) printf '%s' 'Unable to resolve clone HEAD during final canonical readback.' ;;
+    de:message.170) printf '%s' 'Klon-HEAD bei abschließender Zustandsprüfung nicht auflösbar.' ;;
+    en:message.171) printf '%s' 'Unable to resolve the checked-out branch during final canonical readback.' ;;
+    de:message.171) printf '%s' 'Ausgecheckter Branch bei abschließender Zustandsprüfung nicht auflösbar.' ;;
+    en:message.172) printf '%s' 'Unable to resolve the remote branch during final canonical readback.' ;;
+    de:message.172) printf '%s' 'Remote-Branch bei abschließender Zustandsprüfung nicht auflösbar.' ;;
+    en:message.173) printf '%s' 'Clone is not checked out on the requested branch.' ;;
+    de:message.173) printf '%s' 'Klon ist nicht auf dem angeforderten Branch ausgecheckt.' ;;
+    en:message.174) printf '%s' 'Clone head is not exact to the requested remote branch.' ;;
+    de:message.174) printf '%s' 'Klon-Commit entspricht nicht exakt dem angeforderten Remote-Branch.' ;;
+    en:message.175) printf '%s' 'Clone origin changed during checkout; fetch/push URL set is unexpected or credential-bearing; refusing canonical onboarding readback.' ;;
+    de:message.175) printf '%s' 'Origin wurde beim Checkout verändert oder enthält Zugangsdaten; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.176) printf '%s' 'Unable to resolve clone origin during final canonical readback.' ;;
+    de:message.176) printf '%s' 'Origin bei abschließender Zustandsprüfung nicht auflösbar.' ;;
+    en:message.177) printf '%s' 'Clone origin changed during checkout; refusing canonical onboarding readback.' ;;
+    de:message.177) printf '%s' 'Origin wurde beim Checkout verändert; verbindliche Zustandsprüfung gestoppt.' ;;
+    en:message.178) printf '%s' 'Unable to query the selected branch from the GitHub server for final canonical readback.' ;;
+    de:message.178) printf '%s' 'Gewählter Branch konnte zur abschließenden Prüfung nicht vom GitHub-Server gelesen werden.' ;;
+    en:message.179) printf '%s' 'GitHub server returned an ambiguous branch ref during final canonical readback.' ;;
+    de:message.179) printf '%s' 'GitHub-Server lieferte eine mehrdeutige Branch-Referenz.' ;;
+    en:message.180) printf '%s' 'Clone head is not exact to the freshly queried GitHub server branch.' ;;
+    de:message.180) printf '%s' 'Klon-Commit entspricht nicht exakt dem frisch abgefragten GitHub-Server-Branch.' ;;
+    en:message.181) printf '%s' 'Customer client package found.' ;;
+    de:message.181) printf '%s' 'Kundenpaket gefunden.' ;;
+    en:message.182) printf '%s' 'Target repository has no client/README.md; verify the selected channel.' ;;
+    de:message.182) printf '%s' 'Zielrepository enthält keine client/README.md; gewählten Kanal prüfen.' ;;
+    en:message.183) printf '%s' 'Creating sanitized temporary support-channel smoke-test issue.' ;;
+    de:message.183) printf '%s' 'Bereinigtes temporäres Support-Test-Issue wird erstellt.' ;;
+    en:message.184) printf '%s' 'Issue smoke test created an unparseable issue reference.' ;;
+    de:message.184) printf '%s' 'Support-Test lieferte eine unlesbare Issue-Referenz.' ;;
+    en:message.185) printf '%s' 'Issue smoke test did not return a usable issue reference.' ;;
+    de:message.185) printf '%s' 'Support-Test lieferte keine verwendbare Issue-Referenz.' ;;
+    en:message.186) printf '%s' 'IssueSmokeTest=PASS issue={0}' ;;
+    de:message.186) printf '%s' 'IssueSmokeTest=PASS issue={0}' ;;
+    en:message.187) printf '%s' 'HARD_FAIL_CUSTOMER_BOOTSTRAP_ENTRYPOINT_MISSING: the selected customer repository must provide executable run/bootstrap.sh.' ;;
+    de:message.187) printf '%s' 'HARD_FAIL_CUSTOMER_BOOTSTRAP_ENTRYPOINT_MISSING: Das Kundenrepository muss einen ausführbaren Einstieg run/bootstrap.sh bereitstellen.' ;;
+    en:message.188) printf '%s' 'Stage-0 handoff verified; starting the cloned customer bootstrap automatically.' ;;
+    de:message.188) printf '%s' 'Stage-0-Übergabe geprüft; Kundenbootstrap wird automatisch gestartet.' ;;
+    en:message.189) printf '%s' 'Customer bootstrap completed.' ;;
+    de:message.189) printf '%s' 'Kundenbootstrap abgeschlossen.' ;;
+    en:message.190) printf '%s' 'Customer bootstrap failed.' ;;
+    de:message.190) printf '%s' 'Kundenbootstrap fehlgeschlagen.' ;;
+    en:message.191) printf '%s' 'No customer client package detected; no customer bootstrap entrypoint is required.' ;;
+    de:message.191) printf '%s' 'Kein Kundenpaket erkannt; Kundenbootstrap-Einstieg nicht erforderlich.' ;;
+    en:message.192) printf '%s' 'Next: read the cloned repository documentation and follow only documented preflight/install steps.' ;;
+    de:message.192) printf '%s' 'Weiter: Dokumentation des geklonten Repositorys lesen und nur dokumentierte Vorprüfungen/Installationsschritte ausführen.' ;;
+    en:message.193) printf '%s' 'Stage-0 onboarding complete.' ;;
+    de:message.193) printf '%s' 'Stage-0-Onboarding abgeschlossen.' ;;
+    en:license.title) printf '%s' 'Confirm pilot licences' ;;
+    de:license.title) printf '%s' 'Pilotlizenzen bestätigen' ;;
+    en:license.scope) printf '%s' 'Acceptance applies to this execution only.' ;;
+    de:license.scope) printf '%s' 'Diese Zustimmung gilt nur für diesen Lauf.' ;;
+    en:license.options) printf '%s' '[y/j] Accept   [d] Show licence texts   [Enter/n] Stop' ;;
+    de:license.options) printf '%s' '[j/y] Zustimmen   [d] Lizenztexte anzeigen   [Enter/n] Beenden' ;;
+    en:input.choice) printf '%s' 'Your choice: ' ;;
+    de:input.choice) printf '%s' 'Ihre Auswahl: ' ;;
+    en:phase.target) printf '%s' 'Determine target channel' ;;
+    de:phase.target) printf '%s' 'Zielkanal ermitteln' ;;
+    en:phase.packages) printf '%s' 'Prepare repository access' ;;
+    de:phase.packages) printf '%s' 'Repositoryzugriff vorbereiten' ;;
+    en:phase.auth) printf '%s' 'Verify GitHub authentication' ;;
+    de:phase.auth) printf '%s' 'GitHub-Anmeldung prüfen' ;;
+    en:phase.clone) printf '%s' 'Verify customer repository' ;;
+    de:phase.clone) printf '%s' 'Kundenrepository prüfen' ;;
+    en:phase.customer) printf '%s' 'Start customer bootstrap' ;;
+    de:phase.customer) printf '%s' 'Kundenbootstrap starten' ;;
+    en:target.pending) printf '%s' 'Target channel will be determined automatically.' ;;
+    de:target.pending) printf '%s' 'Zielkanal wird automatisch ermittelt.' ;;
+    en:auth.storage) printf '%s' 'Storage note: the verified credential file is in tmpfs (RAM), not the normal persistent GitHub configuration. Host swap policy still applies.' ;;
+    de:auth.storage) printf '%s' 'Speicherhinweis: Die geprüfte Zugangsdaten-Datei liegt in tmpfs (RAM), nicht in der normalen persistenten GitHub-Konfiguration. Die Swap-Einstellung des Hosts gilt weiterhin.' ;;
+    en:help.stage0) printf '%s' 'Customer YubiHSM Stage-0 Bootstrap
+
+Usage:
+  bash ./bootstrap.sh [options]
+  bash ./bootstrap.sh --target-repo <owner/repo> [options]
+
+Examples:
+  bash ./bootstrap.sh --dry-run
+  bash ./bootstrap.sh
+  bash ./bootstrap.sh --private-target --target-repo example-org/pilot-repository
+
+Options:
+  --target-repo <owner/repo>   Recovery-only repository override.
+  --target-branch <branch>     Branch to clone. Default: main
+  --workdir <path>             Parent directory for the clone. Default: ~/git
+  --private-target             Private target: install/authenticate gh. Default.
+  --public-target              Public target: GitHub login is not required.
+  --issue-smoke-test           After private authentication, create/comment/view/close
+                               one sanitized temporary GitHub issue.
+  --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
+  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --forget-auth                Forget this OS user'"'"'s cached Stage-0 logins and stop.
+  --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
+                               requires --install-dir, consumes an existing RAM handoff.
+  --stage0-produce-candidate   Fresh RAM-only login/handoff, then only that consumer.
+                               No manual identity, repository or version operands.
+  --dry-run                    Print the plan only; no package install, auth, clone or issue write.
+  -h, --help                   Show this help.
+
+Stage-0 scope:
+  - Debian/Ubuntu apt-based hosts only.
+  - Installs baseline repository-access tools only.
+  - For private targets installs GitHub CLI from the official signed Debian repository.
+  - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
+  - Uses GitHub device/web authentication without launching a browser on the server; token-bearing GitHub auth environment variables are rejected.
+  - Verifies private repository and issue read access, clones the selected branch and prints readback.
+  - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
+  - Reads the local DNS search domain and _pki.<domain> TXT binding before GitHub authentication.
+  - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
+  - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
+  - Never enumerates repositories from the authenticated GitHub account.
+  - Never creates a GitHub Issue before target binding and authentication.' ;;
+    de:help.stage0) printf '%s' 'YubiHSM Stage-0-Kundenbootstrap
+
+Nutzung:
+  bash ./bootstrap.sh [Optionen]
+  bash ./bootstrap.sh --target-repo <owner/repo> [Optionen]
+
+Beispiele:
+  bash ./bootstrap.sh --dry-run
+  bash ./bootstrap.sh
+
+Optionen:
+  --target-repo <owner/repo>    Repository-Override nur zur Wiederherstellung.
+  --target-branch <branch>     Zu klonender Branch. Standard: main
+  --workdir <pfad>             Übergeordnetes Klonverzeichnis. Standard: ~/git
+  --private-target            Privates Ziel: gh installieren/anmelden. Standard.
+  --public-target             Öffentliches Ziel: keine GitHub-Anmeldung benötigt.
+  --issue-smoke-test          Nach privater Anmeldung ein bereinigtes temporäres Issue erstellen, kommentieren, lesen und schließen.
+  --show-licenses             Beide exakten Lizenztexte und gemeinsamen SHA-256 anzeigen; beenden.
+  --accept-pilot-licenses <sha256>  Ausdrückliche Zustimmung zu diesen Texten für diesen Lauf.
+  --forget-auth               Stage-0-Anmeldecache dieses OS-Benutzers löschen; beenden.
+  --stage0-candidate          Lokaler manifestgebundener Kandidat im benachbarten ../../client; benötigt --install-dir und RAM-Handoff.
+  --stage0-produce-candidate  Frische RAM-Anmeldung/Übergabe; nur lokaler Kandidat, keine manuellen Identitäts-/Repository-/Versionsargumente.
+  --dry-run                   Nur Plan anzeigen; keine Installation, Anmeldung, Klonen oder Issue-Schreibzugriffe.
+  -h, --help                  Diese Hilfe anzeigen.
+
+Stage-0-Umfang:
+  Nur Debian/Ubuntu mit APT. Basispakete für den Repositoryzugriff und bei privaten
+  Zielen die GitHub CLI aus dem offiziellen signierten Debian-Repository.
+  Sicherer OS-Zugangsdaten-Speicher bevorzugt; Headless-Systeme dürfen geprüfte
+  zeitlich begrenzte GitHub-Konfiguration im RAM verwenden.
+  Device/Web-Anmeldung ohne Serverbrowser; Token-Umgebungsvariablen verworfen.
+  Privaten Repository-/Issue-Lesezugriff prüfen, gewählten Branch klonen und zurücklesen.
+  Optionaler Support-Test erstellt nur ein ausdrücklich gewähltes temporäres Issue.
+  DNS-Suchdomain und _pki.<domain> vor GitHub-Anmeldung prüfen.
+  DNS wählt den Kundenkanal; GitHub prüft nur den Zugriff auf genau dieses Ziel.
+  Keine DNS-, Connector-, HSM-, AD-, PKI- oder Release-Änderung.
+  Keine Repository-Aufzählung aus dem GitHub-Konto.
+  Kein GitHub-Issue vor Zielbindung und Anmeldung.' ;;
+    en:browser.no_open) printf '%s' 'No browser was opened on this server.' ;;
+    de:browser.no_open) printf '%s' 'Auf diesem Server wurde kein Browser geöffnet.' ;;
+    en:browser.workstation) printf '%s' 'Open https://github.com/login/device in a normal browser on your workstation and enter the one-time code shown by GitHub CLI.' ;;
+    de:browser.workstation) printf '%s' 'https://github.com/login/device im Arbeitsplatzbrowser öffnen und den Einmalcode aus der GitHub CLI eingeben.' ;;
+    en:browser.invalid) printf '%s' '[-] GitHub CLI requested an unexpected browser URL; refusing local browser handoff.' ;;
+    de:browser.invalid) printf '%s' '[-] GitHub CLI hat eine unerwartete Browser-URL angefordert; Übergabe verweigert.' ;;
+    *) return 2 ;;
+  esac
+}
+yhsm_ui_translate() {
+  local text="$1" pattern template
+  local values=()
+  if [[ "$text" == 'Customer YubiHSM Stage-0 Bootstrap
+
+Usage:
+  bash ./bootstrap.sh [options]
+  bash ./bootstrap.sh --target-repo <owner/repo> [options]
+
+Examples:
+  bash ./bootstrap.sh --dry-run
+  bash ./bootstrap.sh
+  bash ./bootstrap.sh --private-target --target-repo example-org/pilot-repository
+
+Options:
+  --target-repo <owner/repo>   Recovery-only repository override.
+  --target-branch <branch>     Branch to clone. Default: main
+  --workdir <path>             Parent directory for the clone. Default: ~/git
+  --private-target             Private target: install/authenticate gh. Default.
+  --public-target              Public target: GitHub login is not required.
+  --issue-smoke-test           After private authentication, create/comment/view/close
+                               one sanitized temporary GitHub issue.
+  --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
+  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --forget-auth                Forget this OS user'"'"'s cached Stage-0 logins and stop.
+  --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
+                               requires --install-dir, consumes an existing RAM handoff.
+  --stage0-produce-candidate   Fresh RAM-only login/handoff, then only that consumer.
+                               No manual identity, repository or version operands.
+  --dry-run                    Print the plan only; no package install, auth, clone or issue write.
+  -h, --help                   Show this help.
+
+Stage-0 scope:
+  - Debian/Ubuntu apt-based hosts only.
+  - Installs baseline repository-access tools only.
+  - For private targets installs GitHub CLI from the official signed Debian repository.
+  - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
+  - Uses GitHub device/web authentication without launching a browser on the server; token-bearing GitHub auth environment variables are rejected.
+  - Verifies private repository and issue read access, clones the selected branch and prints readback.
+  - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
+  - Reads the local DNS search domain and _pki.<domain> TXT binding before GitHub authentication.
+  - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
+  - Performs no DNS, Connector, HSM, AD, PKI or release mutation.
+  - Never enumerates repositories from the authenticated GitHub account.
+  - Never creates a GitHub Issue before target binding and authentication.' ]]; then yhsm_ui_text help.stage0; return; fi
+  if [[ "$text" == 'Existing clone has repository-local or worktree Git execution configuration or HTTP proxy/TLS override (filter, credential helper, worktree redirection, or transport override); refusing to inspect, authenticate, or update it.' ]]; then yhsm_ui_text message.048; return; fi
+  if [[ "$text" == 'Logs/Support: keine automatischen Voll-Log- oder Datei-Uploads. Freigegebene Supportdaten dienen der Fehleranalyse; zusaetzliche Logs vor Weitergabe auf sensible Daten pruefen.' ]]; then yhsm_ui_text message.008; return; fi
+  if [[ "$text" == 'An initialized submodule has repository-local or worktree Git execution configuration or HTTP transport override; refusing parent worktree inspection or authenticated fetch.' ]]; then yhsm_ui_text message.051; return; fi
+  if [[ "$text" == '(dry-run) authenticate with GitHub device/web flow without opening a local browser; enter the one-time code at https://github.com/login/device from a workstation browser' ]]; then yhsm_ui_text message.061; return; fi
+  if [[ "$text" == 'Copy the one-time code shown by GitHub CLI, then open https://github.com/login/device in a normal browser on your workstation and enter the code there.' ]]; then yhsm_ui_text message.092; return; fi
+  if [[ "$text" == 'GitHub CLI has a plaintext token in its configuration. Remove it with gh auth logout and configure a secure OS credential backend before retrying.' ]]; then yhsm_ui_text message.086; return; fi
+  if [[ "$text" == 'Diagnose-Feedback: AN (bestehendes Opt-in). Bereinigte Version/Support-ID/Status/Fehlerklasse im autorisierten privaten GitHub-Kundenrepository.' ]]; then yhsm_ui_text message.006; return; fi
+  if [[ "$text" == 'An initialized submodule has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust.' ]]; then yhsm_ui_text message.043; return; fi
+  if [[ "$text" == 'Storage note: the verified credential file is in tmpfs (RAM), not the normal persistent GitHub configuration. Host swap policy still applies.' ]]; then yhsm_ui_text auth.storage; return; fi
+  if [[ "$text" == 'Die Lizenzzustimmung aendert weder Feedback-Einstellung noch HSM-/Zielsystemfreigaben. Abschliessende juristische Pruefung ausstehend.' ]]; then yhsm_ui_text message.009; return; fi
+  if [[ "$text" == 'Existing clone has repository-local or worktree Git include configuration; refusing conditional execution configuration before trust.' ]]; then yhsm_ui_text message.041; return; fi
+  if [[ "$text" == 'Clone origin changed during checkout; fetch/push URL set is unexpected or credential-bearing; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.175; return; fi
+  if [[ "$text" == 'GitHub authentication could not be verified. Cached login retained; check connectivity or use --forget-auth before signing in again.' ]]; then yhsm_ui_text message.111; return; fi
+  if [[ "$text" == 'If GitHub CLI asks to press Enter to open a browser, press Enter; Stage-0 intercepts that handoff and keeps the server headless.' ]]; then yhsm_ui_text message.093; return; fi
+  if [[ "$text" == 'HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_INVALID: DNS channel binding is malformed or ambiguous; account fallback is suppressed.' ]]; then yhsm_ui_text message.001; return; fi
+  if [[ "$text" == 'Lizenzzustimmung erforderlich: interaktives Terminal oder --accept-pilot-licenses mit dem exakten Digest aus --show-licenses.' ]]; then yhsm_ui_text message.011; return; fi
+  if [[ "$text" == 'Open https://github.com/login/device in a normal browser on your workstation and enter the one-time code shown by GitHub CLI.' ]]; then yhsm_ui_text browser.workstation; return; fi
+  if [[ "$text" == 'HARD_FAIL_CUSTOMER_BOOTSTRAP_ENTRYPOINT_MISSING: the selected customer repository must provide executable run/bootstrap.sh.' ]]; then yhsm_ui_text message.187; return; fi
+  if [[ "$text" == 'Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state.' ]]; then yhsm_ui_text message.150; return; fi
+  if [[ "$text" == 'HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: no valid DNS binding or explicit unique account-to-channel mapping is available.' ]]; then yhsm_ui_text message.003; return; fi
+  if [[ "$text" == 'Git URL rewriting is active for the requested GitHub repository; refusing clone or fetch from a substituted remote.' ]]; then yhsm_ui_text message.078; return; fi
+  if [[ "$text" == 'Existing clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.140; return; fi
+  if [[ "$text" == 'Existing clone became dirty while switching to the selected remote branch; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.161; return; fi
+  if [[ "$text" == 'Unable to bind initialized-submodule inspection files to the protected session root; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.049; return; fi
+  if [[ "$text" == '(dry-run) prefer and verify a secure system credential store; otherwise use verified RAM-backed session-only auth' ]]; then yhsm_ui_text message.060; return; fi
+  if [[ "$text" == 'Enter only the local password at the sudo prompt; do not paste further commands until the shell prompt returns.' ]]; then yhsm_ui_text message.071; return; fi
+  if [[ "$text" == 'A registered submodule root is a symbolic link; refusing repository-context submodule inspection before trust.' ]]; then yhsm_ui_text message.044; return; fi
+  if [[ "$text" == '(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context' ]]; then yhsm_ui_text message.062; return; fi
+  if [[ "$text" == 'Clone contains an unexpected or credential-bearing origin fetch/push URL; refusing session cleanup readback.' ]]; then yhsm_ui_text message.120; return; fi
+  if [[ "$text" == 'YHSM Pilot: proprietaere Stage-0- und Kunden-Pilotlizenz; nur autorisierte, nicht produktive Evaluierung.' ]]; then yhsm_ui_text message.005; return; fi
+  if [[ "$text" == 'Unable to inspect clone cleanliness after branch synchronization; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.160; return; fi
+  if [[ "$text" == 'Clone has hidden index flags (assume-unchanged or skip-worktree); refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.164; return; fi
+  if [[ "$text" == 'Unable to inspect initialized-submodule Git include configuration directly; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.045; return; fi
+  if [[ "$text" == 'GitHub device/web authentication failed or was interrupted; the previous gh configuration was restored.' ]]; then yhsm_ui_text message.095; return; fi
+  if [[ "$text" == 'Git 2.26 or newer is required to inspect an existing clone safely; upgrade Git or use a fresh workdir.' ]]; then yhsm_ui_text message.040; return; fi
+  if [[ "$text" == 'Secure OS credential store unavailable; using verified RAM-backed session-only GitHub authentication.' ]]; then yhsm_ui_text message.099; return; fi
+  if [[ "$text" == 'RAM-backed Stage-0 session handoff published; next customer bootstrap must consume it before expiry.' ]]; then yhsm_ui_text message.102; return; fi
+  if [[ "$text" == 'Cached Stage-0 GitHub sessions forgotten; active customer runs and OS keyring logins are unchanged.' ]]; then yhsm_ui_text message.037; return; fi
+  if [[ "$text" == '(dry-run) require explicit acceptance of the exact pilot license texts before installation or login' ]]; then yhsm_ui_text message.057; return; fi
+  if [[ "$text" == 'No verified tmpfs is available for session-only GitHub authentication; refusing plaintext fallback.' ]]; then yhsm_ui_text message.098; return; fi
+  pattern='^(.*)\ is\ set;\ Stage\-0\ refuses\ repository\-local\ Git\ environment\ overrides\.\ Unset\ the\ variable\ and\ retry\.$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.038)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'Next: read the cloned repository documentation and follow only documented preflight/install steps.' ]]; then yhsm_ui_text message.192; return; fi
+  pattern='^(.*)\ is\ set;\ private\ Stage\-0\ requires\ GitHub\ Device/Web\ authentication\.\ Unset\ the\ variable\ and\ retry\.$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.035)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'Unable to inspect initialized-submodule Git execution configuration; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.050; return; fi
+  if [[ "$text" == 'Git could not resolve the requested GitHub clone URL without contacting the target repository.' ]]; then yhsm_ui_text message.077; return; fi
+  if [[ "$text" == 'Session-only GitHub authentication did not produce the expected isolated credential record.' ]]; then yhsm_ui_text message.110; return; fi
+  if [[ "$text" == 'Unable to inspect existing clone cleanliness; refusing to modify or report it as canonical.' ]]; then yhsm_ui_text message.141; return; fi
+  if [[ "$text" == 'An initialized submodule has Git replacement refs; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.130; return; fi
+  if [[ "$text" == 'Unable to inspect existing clone replacement refs; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.137; return; fi
+  if [[ "$text" == 'GitHub CLI plaintext fallback was removed and the previous gh configuration was restored.' ]]; then yhsm_ui_text message.096; return; fi
+  if [[ "$text" == 'A previous live or invalid Stage-0 session handoff is still present; refusing overwrite.' ]]; then yhsm_ui_text message.100; return; fi
+  if [[ "$text" == 'An initialized submodule has hidden index flags; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.131; return; fi
+  if [[ "$text" == 'Unable to query the selected branch from the GitHub server for final canonical readback.' ]]; then yhsm_ui_text message.178; return; fi
+  if [[ "$text" == 'Clone did not produce the requested remote branch; tags cannot satisfy --target-branch.' ]]; then yhsm_ui_text message.169; return; fi
+  if [[ "$text" == 'Unable to snapshot normal GitHub/Git configuration before session-only authentication.' ]]; then yhsm_ui_text message.097; return; fi
+  if [[ "$text" == 'Unable to verify initialized submodule state; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.134; return; fi
+  if [[ "$text" == 'Unable to inspect existing clone index flags; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.139; return; fi
+  if [[ "$text" == 'Unexpected positional operand; use --target-repo owner/repository only for recovery.' ]]; then yhsm_ui_text message.025; return; fi
+  if [[ "$text" == 'Diagnose-Feedback: AUS. Keine automatischen Supportmeldungen ohne separates Opt-in.' ]]; then yhsm_ui_text message.007; return; fi
+  if [[ "$text" == 'Unable to inspect an initialized submodule; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.133; return; fi
+  if [[ "$text" == '[-] GitHub CLI requested an unexpected browser URL; refusing local browser handoff.' ]]; then yhsm_ui_text browser.invalid; return; fi
+  if [[ "$text" == 'Unable to inspect Git include configuration directly; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.042; return; fi
+  if [[ "$text" == '(dry-run) install GitHub CLI from the official signed Debian repository if missing' ]]; then yhsm_ui_text message.059; return; fi
+  if [[ "$text" == 'Clone retained a repository-local credential helper after session-only onboarding.' ]]; then yhsm_ui_text message.119; return; fi
+  pattern='^Existing\ clone\ does\ not\ exactly\ match\ origin/(.*)\ and\ cannot\ be\ safely\ fast\-forwarded\.$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.156)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'Unable to inspect final clone index flags; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.163; return; fi
+  if [[ "$text" == 'Unable to inspect final clone cleanliness; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.167; return; fi
+  if [[ "$text" == 'No customer client package detected; no customer bootstrap entrypoint is required.' ]]; then yhsm_ui_text message.191; return; fi
+  if [[ "$text" == 'Unable to probe Git configuration capability safely; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.039; return; fi
+  if [[ "$text" == 'Unable to inspect clone replacement refs; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.165; return; fi
+  if [[ "$text" == 'HARD_FAIL_TARGET_REPOSITORY_DNS_BINDING_UNKNOWN: unexpected DNS resolver status.' ]]; then yhsm_ui_text message.002; return; fi
+  if [[ "$text" == 'Headless GitHub Device authentication: no browser will be opened on this server.' ]]; then yhsm_ui_text message.091; return; fi
+  if [[ "$text" == 'Reusing the GitHub session within its fixed eight-hour window; verifying access.' ]]; then yhsm_ui_text message.103; return; fi
+  if [[ "$text" == 'Existing clone has Git replacement refs; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.138; return; fi
+  if [[ "$text" == 'Starting session-only GitHub Device/Web authentication (valid for eight hours).' ]]; then yhsm_ui_text message.104; return; fi
+  if [[ "$text" == 'Unable to inspect an ignored-file collision against the selected remote branch.' ]]; then yhsm_ui_text message.148; return; fi
+  if [[ "$text" == 'GitHub server returned an ambiguous branch ref during final canonical readback.' ]]; then yhsm_ui_text message.179; return; fi
+  if [[ "$text" == 'Stage-0 handoff verified; starting the cloned customer bootstrap automatically.' ]]; then yhsm_ui_text message.188; return; fi
+  if [[ "$text" == '(dry-run) create, comment, view and close one sanitized temporary GitHub issue' ]]; then yhsm_ui_text message.066; return; fi
+  if [[ "$text" == 'An initialized submodule is not clean; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.132; return; fi
+  if [[ "$text" == 'Existing clone has an unexpected or credential-bearing origin fetch/push URL.' ]]; then yhsm_ui_text message.136; return; fi
+  if [[ "$text" == 'Clone origin changed during checkout; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.177; return; fi
+  if [[ "$text" == 'HARD_FAIL_STAGE0_LAB_MODE_REQUIRED: channel binding must declare lab_mode=1.' ]]; then yhsm_ui_text message.000; return; fi
+  if [[ "$text" == 'Kundenlizenz fehlt oder ist kein regulaeres Dokument; Kundenstart gestoppt.' ]]; then yhsm_ui_text message.015; return; fi
+  if [[ "$text" == '--issue-smoke-test requires --private-target in the current pilot contract.' ]]; then yhsm_ui_text message.034; return; fi
+  if [[ "$text" == 'Unable to inspect Git execution configuration; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.046; return; fi
+  if [[ "$text" == 'Kundenlizenz weicht von der akzeptierten Fassung ab; Kundenstart gestoppt.' ]]; then yhsm_ui_text message.016; return; fi
+  if [[ "$text" == 'Existing clone is not clean; refusing to modify or report it as canonical.' ]]; then yhsm_ui_text message.142; return; fi
+  if [[ "$text" == 'Use --target-repo owner/repository only as an explicit recovery override.' ]]; then yhsm_ui_text message.004; return; fi
+  if [[ "$text" == 'Unable to parse Git execution configuration; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.047; return; fi
+  if [[ "$text" == 'Authenticated GitHub account cannot read issues in the target repository.' ]]; then yhsm_ui_text message.128; return; fi
+  if [[ "$text" == 'Unable to resolve the checked-out branch during final canonical readback.' ]]; then yhsm_ui_text message.171; return; fi
+  if [[ "$text" == 'GitHub session-only device/web authentication failed or was interrupted.' ]]; then yhsm_ui_text message.105; return; fi
+  if [[ "$text" == '(dry-run) forget this OS user'"'"'s cached Stage-0 GitHub sessions and stop' ]]; then yhsm_ui_text message.036; return; fi
+  if [[ "$text" == 'sudo authorization did not become non-interactive after authentication.' ]]; then yhsm_ui_text message.073; return; fi
+  if [[ "$text" == 'Normal GitHub/Git configuration changed during session-only onboarding.' ]]; then yhsm_ui_text message.115; return; fi
+  if [[ "$text" == 'Clone has Git replacement refs; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.166; return; fi
+  if [[ "$text" == 'Target repository has no client/README.md; verify the selected channel.' ]]; then yhsm_ui_text message.182; return; fi
+  if [[ "$text" == 'Clone is dirty after checkout; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.168; return; fi
+  if [[ "$text" == 'Unable to resolve the remote branch during final canonical readback.' ]]; then yhsm_ui_text message.172; return; fi
+  if [[ "$text" == 'Clone head is not exact to the freshly queried GitHub server branch.' ]]; then yhsm_ui_text message.180; return; fi
+  if [[ "$text" == 'curl installation did not produce curl before GitHub CLI bootstrap.' ]]; then yhsm_ui_text message.080; return; fi
+  if [[ "$text" == 'Headless GitHub browser helper failed its file-permission contract.' ]]; then yhsm_ui_text message.089; return; fi
+  if [[ "$text" == 'Another Stage-0 authentication is active; retry after it finishes.' ]]; then yhsm_ui_text message.018; return; fi
+  if [[ "$text" == '--target-branch contains a sensitive-shaped value and is rejected.' ]]; then yhsm_ui_text message.029; return; fi
+  if [[ "$text" == 'Session-only GitHub authentication verified in RAM-backed storage.' ]]; then yhsm_ui_text message.114; return; fi
+  if [[ "$text" == 'Session GitHub configuration escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.106; return; fi
+  if [[ "$text" == 'Authenticated GitHub account cannot access the target repository.' ]]; then yhsm_ui_text message.127; return; fi
+  if [[ "$text" == '--target-repo contains a sensitive-shaped value and is rejected.' ]]; then yhsm_ui_text message.027; return; fi
+  if [[ "$text" == 'sudo authentication failed; no package installation was started.' ]]; then yhsm_ui_text message.072; return; fi
+  if [[ "$text" == 'Local sudo authentication is required for package installation.' ]]; then yhsm_ui_text message.070; return; fi
+  if [[ "$text" == 'Session GitHub configuration was not created as a regular file.' ]]; then yhsm_ui_text message.107; return; fi
+  if [[ "$text" == 'Unable to resolve clone origin during final canonical readback.' ]]; then yhsm_ui_text message.176; return; fi
+  if [[ "$text" == 'python3 and flock are required for the bounded GitHub session.' ]]; then yhsm_ui_text message.017; return; fi
+  if [[ "$text" == 'Stage-0 currently supports Debian/Ubuntu apt-based hosts only.' ]]; then yhsm_ui_text message.053; return; fi
+  if [[ "$text" == '(dry-run) install ca-certificates, dnsutils and git if missing' ]]; then yhsm_ui_text message.058; return; fi
+  if [[ "$text" == 'Creating sanitized temporary support-channel smoke-test issue.' ]]; then yhsm_ui_text message.183; return; fi
+  if [[ "$text" == 'Lizenzdigest stimmt nicht; keine Zustimmung fuer diese Texte.' ]]; then yhsm_ui_text message.010; return; fi
+  if [[ "$text" == '--accept-pilot-licenses requires one exact lowercase SHA-256.' ]]; then yhsm_ui_text message.023; return; fi
+  if [[ "$text" == 'Unable to resolve clone HEAD during final canonical readback.' ]]; then yhsm_ui_text message.170; return; fi
+  if [[ "$text" == '--workdir contains a sensitive-shaped value and is rejected.' ]]; then yhsm_ui_text message.033; return; fi
+  if [[ "$text" == 'Headless GitHub browser-helper root is not a safe directory.' ]]; then yhsm_ui_text message.088; return; fi
+  if [[ "$text" == 'GitHub account could not be verified; cached login retained.' ]]; then yhsm_ui_text message.112; return; fi
+  if [[ "$text" == 'Unable to remove temporary headless GitHub browser helper.' ]]; then yhsm_ui_text message.094; return; fi
+  if [[ "$text" == 'Session GitHub config escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.118; return; fi
+  if [[ "$text" == 'GitHub authentication required for the private repository.' ]]; then yhsm_ui_text message.124; return; fi
+  if [[ "$text" == '(dry-run) verify private repository and issue read access' ]]; then yhsm_ui_text message.063; return; fi
+  if [[ "$text" == 'Unable to publish the RAM-backed Stage-0 session handoff.' ]]; then yhsm_ui_text message.101; return; fi
+  if [[ "$text" == 'Existing clean clone found; fetching exact remote branch.' ]]; then yhsm_ui_text message.143; return; fi
+  if [[ "$text" == 'Existing clone is not exact to the fetched remote branch.' ]]; then yhsm_ui_text message.159; return; fi
+  if [[ "$text" == 'Issue smoke test did not return a usable issue reference.' ]]; then yhsm_ui_text message.185; return; fi
+  if [[ "$text" == 'sudo is required because package installation is needed.' ]]; then yhsm_ui_text message.068; return; fi
+  if [[ "$text" == 'Authenticated GitHub account identity could not be read.' ]]; then yhsm_ui_text message.125; return; fi
+  if [[ "$text" == 'Unable to configure the selected local branch merge ref.' ]]; then yhsm_ui_text message.153; return; fi
+  if [[ "$text" == 'Issue smoke test created an unparseable issue reference.' ]]; then yhsm_ui_text message.184; return; fi
+  if [[ "$text" == 'Session GitHub configuration permissions are too broad.' ]]; then yhsm_ui_text message.109; return; fi
+  if [[ "$text" == 'Session XDG config escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.117; return; fi
+  if [[ "$text" == 'Clone head is not exact to the requested remote branch.' ]]; then yhsm_ui_text message.174; return; fi
+  pattern='^PilotLicenseAcceptance=accepted\ digest=(.*)\ scope=this\-run$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.014)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'Unable to inspect ignored files in the existing clone.' ]]; then yhsm_ui_text message.147; return; fi
+  if [[ "$text" == '[y/j] Accept   [d] Show licence texts   [Enter/n] Stop' ]]; then yhsm_ui_text license.options; return; fi
+  if [[ "$text" == 'Session GitHub configuration has an unexpected owner.' ]]; then yhsm_ui_text message.108; return; fi
+  if [[ "$text" == 'Clone destination exists but is not a Git repository.' ]]; then yhsm_ui_text message.135; return; fi
+  if [[ "$text" == 'Ignored-file inspection record is not a regular file.' ]]; then yhsm_ui_text message.146; return; fi
+  if [[ "$text" == 'Unable to configure the selected local branch remote.' ]]; then yhsm_ui_text message.152; return; fi
+  if [[ "$text" == 'Session-only authentication postconditions verified.' ]]; then yhsm_ui_text message.121; return; fi
+  if [[ "$text" == 'Unable to create the ignored-file inspection record.' ]]; then yhsm_ui_text message.145; return; fi
+  if [[ "$text" == 'Unable to remove the ignored-file inspection record.' ]]; then yhsm_ui_text message.149; return; fi
+  if [[ "$text" == 'Downloading official GitHub CLI repository keyring.' ]]; then yhsm_ui_text message.081; return; fi
+  if [[ "$text" == 'Secure GitHub credential-backend contract verified.' ]]; then yhsm_ui_text message.087; return; fi
+  if [[ "$text" == 'Private repository and issue read access verified.' ]]; then yhsm_ui_text message.129; return; fi
+  if [[ "$text" == 'Session HOME escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.116; return; fi
+  if [[ "$text" == 'Session-only GitHub authentication state removed.' ]]; then yhsm_ui_text message.122; return; fi
+  if [[ "$text" == 'Authenticated GitHub account identity is invalid.' ]]; then yhsm_ui_text message.126; return; fi
+  if [[ "$text" == 'Unable to resolve the synchronized remote branch.' ]]; then yhsm_ui_text message.158; return; fi
+  if [[ "$text" == 'Clone is not checked out on the requested branch.' ]]; then yhsm_ui_text message.173; return; fi
+  if [[ "$text" == 'Baseline client-access packages already present.' ]]; then yhsm_ui_text message.076; return; fi
+  if [[ "$text" == 'Unable to inspect the selected local branch ref.' ]]; then yhsm_ui_text message.151; return; fi
+  if [[ "$text" == 'Target channel will be determined automatically.' ]]; then yhsm_ui_text target.pending; return; fi
+  if [[ "$text" == '(dry-run) print repository/branch/head readback' ]]; then yhsm_ui_text message.065; return; fi
+  if [[ "$text" == 'Stage-0 dry-run complete; no changes performed.' ]]; then yhsm_ui_text message.067; return; fi
+  if [[ "$text" == 'GitHub CLI keyring SHA-256 verification failed.' ]]; then yhsm_ui_text message.083; return; fi
+  if [[ "$text" == 'Unable to resolve the synchronized clone head.' ]]; then yhsm_ui_text message.157; return; fi
+  if [[ "$text" == 'Target repository may be specified only once.' ]]; then yhsm_ui_text message.020; return; fi
+  if [[ "$text" == 'Unsupported host: /etc/os-release is missing.' ]]; then yhsm_ui_text message.052; return; fi
+  if [[ "$text" == '--target-repo requires a repository operand.' ]]; then yhsm_ui_text message.019; return; fi
+  if [[ "$text" == 'Unable to resolve the fetched remote branch.' ]]; then yhsm_ui_text message.144; return; fi
+  if [[ "$text" == 'GitHub CLI installation did not produce gh.' ]]; then yhsm_ui_text message.084; return; fi
+  if [[ "$text" == 'Unable to inspect GitHub CLI login options.' ]]; then yhsm_ui_text message.090; return; fi
+  if [[ "$text" == '--target-branch requires a branch operand.' ]]; then yhsm_ui_text message.021; return; fi
+  if [[ "$text" == 'Installing missing client-access packages.' ]]; then yhsm_ui_text message.075; return; fi
+  if [[ "$text" == 'Unable to resolve the existing clone head.' ]]; then yhsm_ui_text message.154; return; fi
+  if [[ "$text" == 'Unable to inspect existing-clone ancestry.' ]]; then yhsm_ui_text message.155; return; fi
+  if [[ "$text" == 'Acceptance applies to this execution only.' ]]; then yhsm_ui_text license.scope; return; fi
+  if [[ "$text" == 'Required package manager missing: apt-get' ]]; then yhsm_ui_text message.055; return; fi
+  if [[ "$text" == 'Keine Lizenzzustimmung; Stage-0 beendet.' ]]; then yhsm_ui_text message.013; return; fi
+  if [[ "$text" == 'GitHub authentication already present.' ]]; then yhsm_ui_text message.123; return; fi
+  pattern='^\(dry\-run\)\ clone\ exact\ branch\ '"'"'(.*)'"'"'\ from\ (.*)$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.064)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'No browser was opened on this server.' ]]; then yhsm_ui_text browser.no_open; return; fi
+  if [[ "$text" == 'Required package tool missing: dpkg' ]]; then yhsm_ui_text message.056; return; fi
+  if [[ "$text" == 'GitHub CLI keyring download failed.' ]]; then yhsm_ui_text message.082; return; fi
+  if [[ "$text" == '--workdir requires a path operand.' ]]; then yhsm_ui_text message.022; return; fi
+  if [[ "$text" == 'sudo authorization already active.' ]]; then yhsm_ui_text message.069; return; fi
+  if [[ "$text" == 'Unknown option (value redacted).' ]]; then yhsm_ui_text message.024; return; fi
+  pattern='^Required\ Stage\-0\ tool\ missing:\ (.*)$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.054)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'Cached GitHub account mismatch.' ]]; then yhsm_ui_text message.113; return; fi
+  if [[ "$text" == 'Customer client package found.' ]]; then yhsm_ui_text message.181; return; fi
+  if [[ "$text" == 'Keine Lizenzzustimmung (EOF).' ]]; then yhsm_ui_text message.012; return; fi
+  if [[ "$text" == 'Customer bootstrap completed.' ]]; then yhsm_ui_text message.189; return; fi
+  if [[ "$text" == '--workdir must not be empty.' ]]; then yhsm_ui_text message.031; return; fi
+  if [[ "$text" == 'sudo authorization verified.' ]]; then yhsm_ui_text message.074; return; fi
+  if [[ "$text" == 'Cloning customer repository.' ]]; then yhsm_ui_text message.162; return; fi
+  if [[ "$text" == 'Stage-0 onboarding complete.' ]]; then yhsm_ui_text message.193; return; fi
+  if [[ "$text" == 'Verify GitHub authentication' ]]; then yhsm_ui_text phase.auth; return; fi
+  if [[ "$text" == 'GitHub CLI already present.' ]]; then yhsm_ui_text message.079; return; fi
+  if [[ "$text" == 'Invalid target visibility.' ]]; then yhsm_ui_text message.030; return; fi
+  pattern='^IssueSmokeTest=PASS\ issue=(.*)$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text message.186)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
+  if [[ "$text" == 'Customer bootstrap failed.' ]]; then yhsm_ui_text message.190; return; fi
+  if [[ "$text" == 'Verify customer repository' ]]; then yhsm_ui_text phase.clone; return; fi
+  if [[ "$text" == 'Prepare repository access' ]]; then yhsm_ui_text phase.packages; return; fi
+  if [[ "$text" == 'Invalid --target-branch.' ]]; then yhsm_ui_text message.028; return; fi
+  if [[ "$text" == 'Determine target channel' ]]; then yhsm_ui_text phase.target; return; fi
+  if [[ "$text" == 'Start customer bootstrap' ]]; then yhsm_ui_text phase.customer; return; fi
+  if [[ "$text" == 'Invalid --target-repo.' ]]; then yhsm_ui_text message.026; return; fi
+  if [[ "$text" == 'Confirm pilot licences' ]]; then yhsm_ui_text license.title; return; fi
+  if [[ "$text" == 'GitHub CLI installed.' ]]; then yhsm_ui_text message.085; return; fi
+  if [[ "$text" == 'Invalid --workdir.' ]]; then yhsm_ui_text message.032; return; fi
+  if [[ "$text" == 'Your choice: ' ]]; then yhsm_ui_text input.choice; return; fi
+  printf '%s' "$text"
+}
+
+yhsm_ui_init
+# END GENERATED OPERATOR UI
+
 # An already prepared local candidate never enters ordinary Stage-0 onboarding.
 # The client owns validation, the single-use RAM handoff and child cleanup.
 for stage0_arg in "$@"; do
@@ -525,10 +1585,10 @@ print_argv_banner() {
   printf '[argv] %s %s\n' "$(basename -- "$0")" "${masked[*]}"
 }
 
-log_info() { printf '[*] %s\n' "$*"; }
-log_warn() { printf '[!] %s\n' "$*"; }
-log_ok() { printf '[+] %s\n' "$*"; }
-log_error() { printf '[-] %s\n' "$*" >&2; }
+log_info() { yhsm_log_info "$@"; }
+log_warn() { yhsm_log_warn "$@"; }
+log_ok() { yhsm_log_success "$@"; }
+log_error() { yhsm_log_error "$@"; }
 
 # Keep these texts byte-identical to the two authoritative LICENSE sources.
 # Embedded copies keep the one-file bootstrap readable before network/authentication.
@@ -678,7 +1738,9 @@ require_pilot_license_acceptance() {
       return 1
     }
     while true; do
-      printf 'Beiden Pilotlizenzen zustimmen? [j/N/d=Texte]: '
+      yhsm_ui_heading license.title
+      printf '%s\n' "$(yhsm_ui_text license.scope)" "$(yhsm_ui_text license.options)"
+      yhsm_ui_prompt input.choice
       IFS= read -r answer || { log_error "Keine Lizenzzustimmung (EOF)."; return 1; }
       case "${answer,,}" in
         j|ja|y|yes) break ;;
@@ -705,7 +1767,8 @@ verify_customer_pilot_license() {
 }
 
 usage() {
-  cat <<'USAGE'
+  local help
+  help="$(cat <<'USAGE'
 Customer YubiHSM Stage-0 Bootstrap
 
 Usage:
@@ -749,6 +1812,9 @@ Stage-0 scope:
   - Never enumerates repositories from the authenticated GitHub account.
   - Never creates a GitHub Issue before target binding and authentication.
 USAGE
+)"
+  yhsm_ui_translate "$help"
+  printf '\n'
 }
 
 safe_tmpfs_parent() {
@@ -1450,10 +2516,11 @@ command -v dpkg >/dev/null 2>&1 || { log_error "Required package tool missing: d
 SUDO=()
 
 log_info "Stage=0"
-log_info "TargetRepository=$TARGET_REPO"
-log_info "TargetResolution=$TARGET_RESOLUTION"
-log_info "ReleaseChannel=$RELEASE_CHANNEL"
-log_info "LabMode=$LAB_MODE"
+[[ -n "$TARGET_REPO" ]] || log_info "$(yhsm_ui_text target.pending)"
+[[ -z "$TARGET_REPO" ]] || log_info "TargetRepository=$TARGET_REPO"
+[[ -z "$TARGET_RESOLUTION" ]] || log_info "TargetResolution=$TARGET_RESOLUTION"
+[[ -z "$RELEASE_CHANNEL" ]] || log_info "ReleaseChannel=$RELEASE_CHANNEL"
+[[ -z "$LAB_MODE" ]] || log_info "LabMode=$LAB_MODE"
 log_info "TargetBranch=$TARGET_BRANCH"
 log_info "TargetVisibility=$TARGET_VISIBILITY"
 log_info "IssueSmokeTest=$([[ "$ISSUE_SMOKE_TEST" -eq 1 ]] && echo enabled || echo disabled)"
@@ -1480,6 +2547,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 require_pilot_license_acceptance || exit 1
+yhsm_ui_heading phase.packages
 
 ensure_sudo_auth() {
   if [[ "$EUID" -eq 0 ]]; then SUDO=(); return; fi
@@ -1510,6 +2578,7 @@ else
   log_ok "Baseline client-access packages already present."
 fi
 
+yhsm_ui_heading phase.target
 resolve_target_repository || exit 2
 valid_target_repo "$TARGET_REPO" || { log_error "Invalid --target-repo."; exit 2; }
 if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
@@ -1520,6 +2589,7 @@ fi
 clone_url="https://github.com/${TARGET_REPO}.git"
 dest_name="${TARGET_REPO##*/}"
 dest_path="${WORKDIR%/}/${dest_name}"
+yhsm_ui_heading phase.clone
 
 effective_clone_url="$(git ls-remote --get-url "$clone_url" 2>/dev/null)" || {
   log_error "Git could not resolve the requested GitHub clone URL without contacting the target repository."
@@ -2206,21 +3276,21 @@ make_headless_gh_browser_helper() {
     return 1
   }
   helper="$(mktemp "$root/yhsm-stage0-gh-browser.XXXXXX")" || return 1
-  cat >"$helper" <<'EOF'
-#!/usr/bin/env bash
-set -eu
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+    printf 'error_text=%q\n' "$(yhsm_ui_text browser.invalid)"
+    cat <<'EOF'
 expected='https://github.com/login/device'
 url="${1:-}"
 case "$url" in
   "$expected"|"$expected/") ;;
-  *)
-    printf '%s\n' '[-] GitHub CLI requested an unexpected browser URL; refusing local browser handoff.' >&2
-    exit 64
-    ;;
+  *) printf '%s\n' "$error_text" >&2; exit 64 ;;
 esac
-printf '%s\n' '[*] No browser was opened on this server.'
-printf '%s\n' '[*] Open https://github.com/login/device in a normal browser on your workstation and enter the one-time code shown by GitHub CLI.'
 EOF
+    printf "printf '%%s\\n' %q\n" "[*] $(yhsm_ui_text browser.no_open)"
+    printf "printf '%%s\\n' %q\n" "[*] $(yhsm_ui_text browser.workstation)"
+  } >"$helper"
+
   chmod 0700 "$helper" || { rm -f -- "$helper"; return 1; }
   mode="$(stat -c '%a' -- "$helper" 2>/dev/null || true)"
   [[ "$mode" == '700' && -f "$helper" && ! -L "$helper" ]] || {
@@ -2927,6 +3997,7 @@ run_gh_session_login() {
   unlock_auth_cache
   run_interruptible_child gh auth setup-git --hostname github.com || return $?
   log_ok "Session-only GitHub authentication verified in RAM-backed storage."
+  log_info "Storage note: the verified credential file is in tmpfs (RAM), not the normal persistent GitHub configuration. Host swap policy still applies."
 }
 
 verify_direct_repo_has_no_credential_helper() {
@@ -3047,6 +4118,7 @@ finish_session_auth() {
 }
 
 if [[ "$TARGET_VISIBILITY" == "private" ]]; then
+  yhsm_ui_heading phase.auth
   install_gh
   reject_plaintext_gh_credentials
   if gh auth status --hostname github.com >/dev/null 2>&1; then
@@ -3476,6 +4548,7 @@ if [[ "$DRY_RUN" -eq 0 && -f "$dest_path/client/manifest.json" ]]; then
     log_error "HARD_FAIL_CUSTOMER_BOOTSTRAP_ENTRYPOINT_MISSING: the selected customer repository must provide executable run/bootstrap.sh."
     exit 1
   }
+  yhsm_ui_heading phase.customer
   log_info "Stage-0 handoff verified; starting the cloned customer bootstrap automatically."
   if run_interruptible_child "$dest_path/run/bootstrap.sh"; then
     log_ok "Customer bootstrap completed."
