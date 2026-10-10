@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3bcbfa3e4d6f864f06a678d9cccc881d488338c8/bootstrap.sh && echo 'b404512dcb2d53d3cebf6b234236dd34270b7a25802512e1efcda269f7ff894e  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3db07b4c8b0369fd7f740444c47557c44c2bd99c/bootstrap.sh && echo '7d548cd873cb1a1297df40563fb273fce5e65bcb590891a45ae70b36bcd947c3  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -113,3 +113,18 @@ Before a normal customer package starts, its root `LICENSE` must match the
 embedded customer terms byte for byte. Missing, changed or symlinked terms stop
 the customer handoff instead of silently accepting a different license.
 The license texts themselves and the pending final legal-review status are unchanged.
+
+## Language and terminal presentation
+
+Stage-0 selects German or English from the effective message language of the
+host session before UTF-8 normalization. Regional variants such as de_DE,
+de_AT, de_CH, en_GB and en_US select the corresponding language. English is
+the fallback. Keyboard layout and timezone do not select a language. Across
+SSH, only the environment supplied to the server session is visible.
+
+A presentation-only override is available through YHSM_UI_LANGUAGE=de or en.
+Colors highlight license choices and phases only on a terminal. NO_COLOR or
+the existing mono color profile disables them; redirected output stays plain.
+License consent remains explicit and defaults to stopping. GitHub CLI output
+keeps its original wording. The customer entrypoint after the verified handoff
+retains its separately delivered language and UI behavior.
