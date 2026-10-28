@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3db07b4c8b0369fd7f740444c47557c44c2bd99c/bootstrap.sh && echo '7d548cd873cb1a1297df40563fb273fce5e65bcb590891a45ae70b36bcd947c3  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/cd36be69399e8e1ca60268479c30676cacbd31b5/bootstrap.sh && echo '3a32f2d16bc1b6bdfe2c141a70e8ac7fcdd5e7ef33a9ff700ce52a6d9ae8b35a  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -39,6 +39,8 @@ The download URL is bound to an immutable Public commit and the SHA-256 is bound
 ## Safe use
 
 Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host. A directly downloaded bootstrap file is not assumed to have an executable mode, so invoke it explicitly with Bash.
+
+Licence acceptance is remembered locally for the same host, user and unchanged licence text. A changed licence requires acceptance again. Automatic private diagnostic feedback is a separate, optional choice: both acceptance and refusal are remembered. Refusing telemetry does not prevent the normal workflow. A restart can continue a verified installation; target operations retain their own fresh checks and explicit authorizations.
 
 For the normal private onboarding path, the execution step is intentionally short:
 
