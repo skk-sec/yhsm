@@ -280,10 +280,10 @@ yhsm_ui_text() {
     de:message.004) printf '%s' '--target-repo owner/repository nur als ausdrücklichen Wiederherstellungs-Override verwenden.' ;;
     en:message.005) printf '%s' 'YHSM pilot: proprietary Stage-0 and customer pilot licences; authorized non-production evaluation only.' ;;
     de:message.005) printf '%s' 'YHSM Pilot: proprietäre Stage-0- und Kunden-Pilotlizenz; nur autorisierte, nicht produktive Evaluierung.' ;;
-    en:message.006) printf '%s' 'Diagnostic feedback: ON (existing opt-in). Sanitized version/support ID/status/failure class in the authorized private GitHub customer repository.' ;;
-    de:message.006) printf '%s' 'Diagnose-Feedback: AN (bestehendes Opt-in). Bereinigte Version/Support-ID/Status/Fehlerklasse im autorisierten privaten GitHub-Kundenrepository.' ;;
-    en:message.007) printf '%s' 'Diagnostic feedback: OFF. No automatic support messages without separate opt-in.' ;;
-    de:message.007) printf '%s' 'Diagnose-Feedback: AUS. Keine automatischen Supportmeldungen ohne separates Opt-in.' ;;
+    en:message.006) printf '%s' 'Automatic private problem feedback is optional and has a separate saved decision.' ;;
+    de:message.006) printf '%s' 'Automatische private Problemrückmeldung ist freiwillig und hat eine getrennte gespeicherte Entscheidung.' ;;
+    en:message.007) printf '%s' 'A feedback denial is respected and does not block the customer workflow.' ;;
+    de:message.007) printf '%s' 'Eine Feedback-Ablehnung wird respektiert und blockiert den Kundenablauf nicht.' ;;
     en:message.008) printf '%s' 'Logs/support: no automatic full-log or file uploads. Approved support data is used for troubleshooting; check additional logs for sensitive data before sharing.' ;;
     de:message.008) printf '%s' 'Logs/Support: keine automatischen Voll-Log- oder Datei-Uploads. Freigegebene Supportdaten dienen der Fehleranalyse; zusätzliche Logs vor Weitergabe auf sensible Daten prüfen.' ;;
     en:message.009) printf '%s' 'Licence acceptance changes neither feedback settings nor HSM/target authorization. Final legal review remains pending.' ;;
@@ -296,8 +296,8 @@ yhsm_ui_text() {
     de:message.012) printf '%s' 'Keine Lizenzzustimmung (EOF).' ;;
     en:message.013) printf '%s' 'No licence acceptance; Stage-0 stopped.' ;;
     de:message.013) printf '%s' 'Keine Lizenzzustimmung; Stage-0 beendet.' ;;
-    en:message.014) printf '%s' 'PilotLicenseAcceptance=accepted digest={0} scope=this-run' ;;
-    de:message.014) printf '%s' 'PilotLicenseAcceptance=accepted digest={0} scope=this-run' ;;
+    en:message.014) printf '%s' 'PilotLicenseAcceptance=accepted digest={0} scope=host-user' ;;
+    de:message.014) printf '%s' 'PilotLicenseAcceptance=accepted digest={0} scope=host-user' ;;
     en:message.015) printf '%s' 'Customer licence missing or not a regular document; customer startup stopped.' ;;
     de:message.015) printf '%s' 'Kundenlizenz fehlt oder ist kein reguläres Dokument; Kundenstart gestoppt.' ;;
     en:message.016) printf '%s' 'Customer licence differs from the accepted text; customer startup stopped.' ;;
@@ -394,8 +394,8 @@ yhsm_ui_text() {
     de:message.061) printf '%s' '(Plan) GitHub Device/Web-Anmeldung ohne Serverbrowser; Einmalcode auf dem Arbeitsplatz unter https://github.com/login/device eingeben' ;;
     en:message.062) printf '%s' '(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context' ;;
     de:message.062) printf '%s' '(Plan) gh nur im gewählten persistenten oder temporären Kontext als Git-Zugangsdaten-Hilfe konfigurieren' ;;
-    en:message.063) printf '%s' '(dry-run) verify private repository and issue read access' ;;
-    de:message.063) printf '%s' '(Plan) privaten Repository- und Issue-Lesezugriff prüfen' ;;
+    en:message.063) printf '%s' '(dry-run) verify private repository access; require issue access only for enabled feedback or an explicit issue smoke test' ;;
+    de:message.063) printf '%s' '(Plan) privaten Repositoryzugriff prüfen; Issue-Zugriff nur für aktivierte Rückmeldung oder einen ausdrücklichen Issue-Test verlangen' ;;
     en:message.064) printf '%s' '(dry-run) clone exact branch '"'"'{0}'"'"' from {1}' ;;
     de:message.064) printf '%s' '(Plan) exakten Branch '"'"'{0}'"'"' aus {1} klonen' ;;
     en:message.065) printf '%s' '(dry-run) print repository/branch/head readback' ;;
@@ -658,8 +658,8 @@ yhsm_ui_text() {
     de:message.193) printf '%s' 'Stage-0-Onboarding abgeschlossen.' ;;
     en:license.title) printf '%s' 'Confirm pilot licences' ;;
     de:license.title) printf '%s' 'Pilotlizenzen bestätigen' ;;
-    en:license.scope) printf '%s' 'Acceptance applies to this execution only.' ;;
-    de:license.scope) printf '%s' 'Diese Zustimmung gilt nur für diesen Lauf.' ;;
+    en:license.scope) printf '%s' 'Acceptance is stored locally for this host, OS user and unchanged licence texts.' ;;
+    de:license.scope) printf '%s' 'Zustimmung wird lokal für diesen Host, OS-Benutzer und unveränderte Lizenztexte gespeichert.' ;;
     en:license.options) printf '%s' '[y/j] Accept   [d] Show licence texts   [Enter/n] Stop' ;;
     de:license.options) printf '%s' '[j/y] Zustimmen   [d] Lizenztexte anzeigen   [Enter/n] Beenden' ;;
     en:input.choice) printf '%s' 'Your choice: ' ;;
@@ -698,7 +698,7 @@ Options:
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
   --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
-  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --accept-pilot-licenses <sha256>  Explicit acceptance stored for this host/user and exact texts.
   --forget-auth                Forget this OS user'"'"'s cached Stage-0 logins and stop.
   --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
                                requires --install-dir, consumes an existing RAM handoff.
@@ -713,7 +713,7 @@ Stage-0 scope:
   - For private targets installs GitHub CLI from the official signed Debian repository.
   - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
   - Uses GitHub device/web authentication without launching a browser on the server; token-bearing GitHub auth environment variables are rejected.
-  - Verifies private repository and issue read access, clones the selected branch and prints readback.
+  - Verifies private repository access; issue access is needed only for enabled feedback or the explicit issue test. Clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
   - Reads the local DNS search domain and _pki.<domain> TXT binding before GitHub authentication.
   - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
@@ -738,7 +738,7 @@ Optionen:
   --public-target             Öffentliches Ziel: keine GitHub-Anmeldung benötigt.
   --issue-smoke-test          Nach privater Anmeldung ein bereinigtes temporäres Issue erstellen, kommentieren, lesen und schließen.
   --show-licenses             Beide exakten Lizenztexte und gemeinsamen SHA-256 anzeigen; beenden.
-  --accept-pilot-licenses <sha256>  Ausdrückliche Zustimmung zu diesen Texten für diesen Lauf.
+  --accept-pilot-licenses <sha256>  Zustimmung zu diesen Texten für diesen Host/Benutzer speichern.
   --forget-auth               Stage-0-Anmeldecache dieses OS-Benutzers löschen; beenden.
   --stage0-candidate          Lokaler manifestgebundener Kandidat im benachbarten ../../client; benötigt --install-dir und RAM-Handoff.
   --stage0-produce-candidate  Frische RAM-Anmeldung/Übergabe; nur lokaler Kandidat, keine manuellen Identitäts-/Repository-/Versionsargumente.
@@ -751,7 +751,7 @@ Stage-0-Umfang:
   Sicherer OS-Zugangsdaten-Speicher bevorzugt; Headless-Systeme dürfen geprüfte
   zeitlich begrenzte GitHub-Konfiguration im RAM verwenden.
   Device/Web-Anmeldung ohne Serverbrowser; Token-Umgebungsvariablen verworfen.
-  Privaten Repository-/Issue-Lesezugriff prüfen, gewählten Branch klonen und zurücklesen.
+  Privaten Repositoryzugriff prüfen; Issue-Zugriff nur für aktivierte Rückmeldung oder den ausdrücklichen Issue-Test verlangen. Gewählten Branch klonen und zurücklesen.
   Optionaler Support-Test erstellt nur ein ausdrücklich gewähltes temporäres Issue.
   DNS-Suchdomain und _pki.<domain> vor GitHub-Anmeldung prüfen.
   DNS wählt den Kundenkanal; GitHub prüft nur den Zugriff auf genau dieses Ziel.
@@ -764,6 +764,14 @@ Stage-0-Umfang:
     de:browser.workstation) printf '%s' 'https://github.com/login/device im Arbeitsplatzbrowser öffnen und den Einmalcode aus der GitHub CLI eingeben.' ;;
     en:browser.invalid) printf '%s' '[-] GitHub CLI requested an unexpected browser URL; refusing local browser handoff.' ;;
     de:browser.invalid) printf '%s' '[-] GitHub CLI hat eine unerwartete Browser-URL angefordert; Übergabe verweigert.' ;;
+    en:consent.reused) printf '%s' 'PilotLicenseAcceptance=reused digest={0} scope=host-user' ;;
+    de:consent.reused) printf '%s' 'PilotLicenseAcceptance=reused digest={0} scope=host-user' ;;
+    en:telemetry.choice) printf '%s' 'Allow automatic private problem feedback? [y/N] (saved locally): ' ;;
+    de:telemetry.choice) printf '%s' 'Automatische private Problemrückmeldung erlauben? [j/N] (lokal gespeichert): ' ;;
+    en:telemetry.separate) printf '%s' 'Feedback choice saved separately; licence and target permissions remain independent.' ;;
+    de:telemetry.separate) printf '%s' 'Feedbackentscheidung getrennt gespeichert; Lizenz und Zielsystemfreigaben bleiben unabhängig.' ;;
+    en:auth.repository_only) printf '%s' 'Private repository access verified; issue access is not required with automatic feedback disabled.' ;;
+    de:auth.repository_only) printf '%s' 'Privater Repositoryzugriff geprüft; bei deaktivierter automatischer Rückmeldung ist kein Issue-Zugriff erforderlich.' ;;
     *) return 2 ;;
   esac
 }
@@ -790,7 +798,7 @@ Options:
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
   --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
-  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --accept-pilot-licenses <sha256>  Explicit acceptance stored for this host/user and exact texts.
   --forget-auth                Forget this OS user'"'"'s cached Stage-0 logins and stop.
   --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
                                requires --install-dir, consumes an existing RAM handoff.
@@ -805,7 +813,7 @@ Stage-0 scope:
   - For private targets installs GitHub CLI from the official signed Debian repository.
   - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
   - Uses GitHub device/web authentication without launching a browser on the server; token-bearing GitHub auth environment variables are rejected.
-  - Verifies private repository and issue read access, clones the selected branch and prints readback.
+  - Verifies private repository access; issue access is needed only for enabled feedback or the explicit issue test. Clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
   - Reads the local DNS search domain and _pki.<domain> TXT binding before GitHub authentication.
   - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
@@ -830,6 +838,7 @@ Stage-0 scope:
   if [[ "$text" == 'Lizenzzustimmung erforderlich: interaktives Terminal oder --accept-pilot-licenses mit dem exakten Digest aus --show-licenses.' ]]; then yhsm_ui_text message.011; return; fi
   if [[ "$text" == 'Open https://github.com/login/device in a normal browser on your workstation and enter the one-time code shown by GitHub CLI.' ]]; then yhsm_ui_text browser.workstation; return; fi
   if [[ "$text" == 'HARD_FAIL_CUSTOMER_BOOTSTRAP_ENTRYPOINT_MISSING: the selected customer repository must provide executable run/bootstrap.sh.' ]]; then yhsm_ui_text message.187; return; fi
+  if [[ "$text" == '(dry-run) verify private repository access; require issue access only for enabled feedback or an explicit issue smoke test' ]]; then yhsm_ui_text message.063; return; fi
   if [[ "$text" == 'Existing clone has an ignored local file that collides with the selected remote branch; refusing to overwrite local state.' ]]; then yhsm_ui_text message.150; return; fi
   if [[ "$text" == 'HARD_FAIL_TARGET_REPOSITORY_UNRESOLVED: no valid DNS binding or explicit unique account-to-channel mapping is available.' ]]; then yhsm_ui_text message.003; return; fi
   if [[ "$text" == 'Git URL rewriting is active for the requested GitHub repository; refusing clone or fetch from a substituted remote.' ]]; then yhsm_ui_text message.078; return; fi
@@ -859,6 +868,7 @@ Stage-0 scope:
     yhsm_ui_format "$template" "${values[@]}"; return
   fi
   if [[ "$text" == 'Next: read the cloned repository documentation and follow only documented preflight/install steps.' ]]; then yhsm_ui_text message.192; return; fi
+  if [[ "$text" == 'Private repository access verified; issue access is not required with automatic feedback disabled.' ]]; then yhsm_ui_text auth.repository_only; return; fi
   pattern='^(.*)\ is\ set;\ private\ Stage\-0\ requires\ GitHub\ Device/Web\ authentication\.\ Unset\ the\ variable\ and\ retry\.$'
   if [[ "$text" =~ $pattern ]]; then
     values=("${BASH_REMATCH[@]:1}")
@@ -881,6 +891,7 @@ Stage-0 scope:
   if [[ "$text" == 'Unable to inspect existing clone index flags; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.139; return; fi
   if [[ "$text" == 'Unexpected positional operand; use --target-repo owner/repository only for recovery.' ]]; then yhsm_ui_text message.025; return; fi
   if [[ "$text" == 'Diagnose-Feedback: AUS. Keine automatischen Supportmeldungen ohne separates Opt-in.' ]]; then yhsm_ui_text message.007; return; fi
+  if [[ "$text" == 'Feedback choice saved separately; licence and target permissions remain independent.' ]]; then yhsm_ui_text telemetry.separate; return; fi
   if [[ "$text" == 'Unable to inspect an initialized submodule; refusing canonical onboarding readback.' ]]; then yhsm_ui_text message.133; return; fi
   if [[ "$text" == '[-] GitHub CLI requested an unexpected browser URL; refusing local browser handoff.' ]]; then yhsm_ui_text browser.invalid; return; fi
   if [[ "$text" == 'Unable to inspect Git include configuration directly; refusing Stage-0 onboarding.' ]]; then yhsm_ui_text message.042; return; fi
@@ -935,6 +946,7 @@ Stage-0 scope:
   if [[ "$text" == 'Session-only GitHub authentication verified in RAM-backed storage.' ]]; then yhsm_ui_text message.114; return; fi
   if [[ "$text" == 'Session GitHub configuration escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.106; return; fi
   if [[ "$text" == 'Authenticated GitHub account cannot access the target repository.' ]]; then yhsm_ui_text message.127; return; fi
+  if [[ "$text" == 'Allow automatic private problem feedback? [y/N] (saved locally): ' ]]; then yhsm_ui_text telemetry.choice; return; fi
   if [[ "$text" == '--target-repo contains a sensitive-shaped value and is rejected.' ]]; then yhsm_ui_text message.027; return; fi
   if [[ "$text" == 'sudo authentication failed; no package installation was started.' ]]; then yhsm_ui_text message.072; return; fi
   if [[ "$text" == 'Local sudo authentication is required for package installation.' ]]; then yhsm_ui_text message.070; return; fi
@@ -953,7 +965,6 @@ Stage-0 scope:
   if [[ "$text" == 'Unable to remove temporary headless GitHub browser helper.' ]]; then yhsm_ui_text message.094; return; fi
   if [[ "$text" == 'Session GitHub config escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.118; return; fi
   if [[ "$text" == 'GitHub authentication required for the private repository.' ]]; then yhsm_ui_text message.124; return; fi
-  if [[ "$text" == '(dry-run) verify private repository and issue read access' ]]; then yhsm_ui_text message.063; return; fi
   if [[ "$text" == 'Unable to publish the RAM-backed Stage-0 session handoff.' ]]; then yhsm_ui_text message.101; return; fi
   if [[ "$text" == 'Existing clean clone found; fetching exact remote branch.' ]]; then yhsm_ui_text message.143; return; fi
   if [[ "$text" == 'Existing clone is not exact to the fetched remote branch.' ]]; then yhsm_ui_text message.159; return; fi
@@ -962,21 +973,27 @@ Stage-0 scope:
   if [[ "$text" == 'Authenticated GitHub account identity could not be read.' ]]; then yhsm_ui_text message.125; return; fi
   if [[ "$text" == 'Unable to configure the selected local branch merge ref.' ]]; then yhsm_ui_text message.153; return; fi
   if [[ "$text" == 'Issue smoke test created an unparseable issue reference.' ]]; then yhsm_ui_text message.184; return; fi
-  if [[ "$text" == 'Session GitHub configuration permissions are too broad.' ]]; then yhsm_ui_text message.109; return; fi
-  if [[ "$text" == 'Session XDG config escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.117; return; fi
-  if [[ "$text" == 'Clone head is not exact to the requested remote branch.' ]]; then yhsm_ui_text message.174; return; fi
-  pattern='^PilotLicenseAcceptance=accepted\ digest=(.*)\ scope=this\-run$'
+  pattern='^PilotLicenseAcceptance=accepted\ digest=(.*)\ scope=host\-user$'
   if [[ "$text" =~ $pattern ]]; then
     values=("${BASH_REMATCH[@]:1}")
     template="$(yhsm_ui_text message.014)"
     yhsm_ui_format "$template" "${values[@]}"; return
   fi
+  if [[ "$text" == 'Session GitHub configuration permissions are too broad.' ]]; then yhsm_ui_text message.109; return; fi
+  if [[ "$text" == 'Session XDG config escaped the RAM-backed session root.' ]]; then yhsm_ui_text message.117; return; fi
+  if [[ "$text" == 'Clone head is not exact to the requested remote branch.' ]]; then yhsm_ui_text message.174; return; fi
   if [[ "$text" == 'Unable to inspect ignored files in the existing clone.' ]]; then yhsm_ui_text message.147; return; fi
   if [[ "$text" == '[y/j] Accept   [d] Show licence texts   [Enter/n] Stop' ]]; then yhsm_ui_text license.options; return; fi
   if [[ "$text" == 'Session GitHub configuration has an unexpected owner.' ]]; then yhsm_ui_text message.108; return; fi
   if [[ "$text" == 'Clone destination exists but is not a Git repository.' ]]; then yhsm_ui_text message.135; return; fi
   if [[ "$text" == 'Ignored-file inspection record is not a regular file.' ]]; then yhsm_ui_text message.146; return; fi
   if [[ "$text" == 'Unable to configure the selected local branch remote.' ]]; then yhsm_ui_text message.152; return; fi
+  pattern='^PilotLicenseAcceptance=reused\ digest=(.*)\ scope=host\-user$'
+  if [[ "$text" =~ $pattern ]]; then
+    values=("${BASH_REMATCH[@]:1}")
+    template="$(yhsm_ui_text consent.reused)"
+    yhsm_ui_format "$template" "${values[@]}"; return
+  fi
   if [[ "$text" == 'Session-only authentication postconditions verified.' ]]; then yhsm_ui_text message.121; return; fi
   if [[ "$text" == 'Unable to create the ignored-file inspection record.' ]]; then yhsm_ui_text message.145; return; fi
   if [[ "$text" == 'Unable to remove the ignored-file inspection record.' ]]; then yhsm_ui_text message.149; return; fi
@@ -1588,7 +1605,111 @@ print_argv_banner() {
 log_info() { yhsm_log_info "$@"; }
 log_warn() { yhsm_log_warn "$@"; }
 log_ok() { yhsm_log_success "$@"; }
-log_error() { yhsm_log_error "$@"; }
+
+# Shared, private local pending records are available before clone/authentication.
+YHSM_SUPPORT_REPO=""
+YHSM_SUPPORT_RUN_ID=""
+YHSM_SUPPORT_ISSUE_NUMBER=""
+YHSM_SUPPORT_RELEASE_VERSION=unknown
+YHSM_SUPPORT_STATE_FILE="${YHSM_SUPPORT_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/yhsm/customer-support-run.json}"
+YHSM_STAGE0_FEEDBACK_ERROR=HARD_FAIL_CUSTOMER_EXECUTION_NO_GO
+export YHSM_SUPPORT_STATE_FILE
+yhsm_feedback_normal_run() { export YHSM_AUTOMATIC_ISSUE_FEEDBACK="${YHSM_AUTOMATIC_ISSUE_FEEDBACK:-0}"; }
+yhsm_feedback_ensure_run() {
+  if [[ ! "$YHSM_SUPPORT_RUN_ID" =~ ^YHSM-[A-F0-9]{16}$ ]]; then
+    YHSM_SUPPORT_RUN_ID="$(python3 -c 'import secrets; print("YHSM-"+secrets.token_hex(8).upper())')" || return 1
+    export YHSM_SUPPORT_RUN_ID
+  fi
+}
+_yhsm_feedback_pending() {
+  local action="$1"; shift
+  python3 - "$action" "$YHSM_SUPPORT_STATE_FILE.pending" "$YHSM_SUPPORT_REPO" "$YHSM_SUPPORT_RUN_ID" "$YHSM_SUPPORT_RELEASE_VERSION" "$YHSM_SUPPORT_ISSUE_NUMBER" "$@" <<'PY_PENDING'
+import datetime, hashlib, json, os, re, stat, sys
+from pathlib import Path
+action, directory, repo, run, release, issue, *args = sys.argv[1:]
+root=Path(directory)
+def read(path):
+    s=path.lstat()
+    if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or stat.S_IMODE(s.st_mode)&0o077 or s.st_nlink!=1:
+        raise ValueError("metadata")
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    with os.fdopen(fd,encoding="utf-8") as stream:
+        if os.fstat(stream.fileno()).st_size>8192: raise ValueError("size")
+        return json.load(stream)
+try:
+    for parent in [root,*root.parents]:
+        if parent.is_symlink(): raise ValueError("symlink")
+    if action=="write":
+        if not re.fullmatch(r"YHSM-[A-F0-9]{16}",run): raise ValueError("run")
+        root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if root.exists():
+        s=root.lstat()
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)&0o077:
+            raise ValueError("directory")
+    if action=="write":
+        step,status,error,detail,overall=args
+        digest=hashlib.sha256("\0".join([run,step,status,error,detail,overall]).encode()).hexdigest()[:24]
+        path=root/(run+"-"+digest+".json")
+        data=dict(repository=repo,run_id=run,release=release,issue=issue,step=step,status=status,
+                  error=error,detail=detail,overall=overall,observed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+        if not path.exists():
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,"w",encoding="utf-8") as stream: json.dump(data,stream)
+        else:
+            old=read(path)
+            if any(old.get(k)!=v for k,v in data.items() if k!="observed_at"): raise ValueError("collision")
+        print(path)
+    elif action=="resume":
+        if root.exists():
+            for path in sorted(root.glob("YHSM-*.json")):
+                data=read(path)
+                if data.get("repository")==repo and re.fullmatch(r"YHSM-[A-F0-9]{16}",str(data.get("run_id",""))):
+                    print(data["run_id"]); print(data.get("issue","")); break
+    elif action=="list":
+        if root.exists():
+            for path in sorted(root.glob(run+"-*.json")):
+                data=read(path)
+                if data.get("repository")==repo or (not data.get("repository") and data.get("run_id")==run):
+                    print(path)
+    elif action=="read":
+        path=Path(args[0])
+        if path.parent!=root: raise ValueError("scope")
+        data=read(path)
+        for key in ["step","status","error","detail","overall","release"]:
+            value=str(data.get(key,""))
+            if "\n" in value or "\r" in value: raise ValueError("value")
+            print(value)
+    elif action=="ack":
+        path=Path(args[0])
+        if path.parent!=root: raise ValueError("scope")
+        read(path); path.unlink()
+except (OSError,ValueError,TypeError,KeyError):
+    print("SUPPORT_PENDING=BLOCKED",file=sys.stderr); raise SystemExit(1)
+PY_PENDING
+}
+
+stage0_feedback_allowed() {
+  local decision
+  command -v python3 >/dev/null 2>&1 || return 1
+  decision="$(yhsm_onboarding_state telemetry-get 2>/dev/null)" || return 1
+  [[ "$decision" == accepted ]]
+}
+
+log_error() {
+  yhsm_log_error "$@"
+  if [[ "$DRY_RUN" -eq 0 ]] && stage0_feedback_allowed; then
+    if [[ "$1" =~ ^(HARD_FAIL_[A-Z0-9_]+) ]]; then YHSM_STAGE0_FEEDBACK_ERROR="${BASH_REMATCH[1]}"; fi
+    if yhsm_feedback_ensure_run; then
+      if ! _yhsm_feedback_pending write "GitHub/Auth" BLOCKED "$YHSM_STAGE0_FEEDBACK_ERROR" "stage0-problem; cause-unverified" NO_GO >/dev/null; then
+        yhsm_log_warn "SUPPORT_PENDING=BLOCKED"
+      fi
+    else
+      yhsm_log_warn "SUPPORT_PENDING=BLOCKED"
+    fi
+    yhsm_log_warn "FEEDBACK_PENDING=true; redacted problem retained until the exact private customer channel is authenticated."
+  fi
+}
+
 
 # Keep these texts byte-identical to the two authoritative LICENSE sources.
 # Embedded copies keep the one-file bootstrap readable before network/authentication.
@@ -1723,10 +1844,382 @@ show_pilot_notice() {
   log_info "Die Lizenzzustimmung aendert weder Feedback-Einstellung noch HSM-/Zielsystemfreigaben. Abschliessende juristische Pruefung ausstehend."
 }
 
+# BEGIN GENERATED ONBOARDING STATE
+yhsm_onboarding_state() {
+  python3 -I -B - "$@" <<'PY_YHSM_ONBOARDING_STATE'
+"""Private, host/user-bound consent and progress; never stores credentials (#3204)."""
+import argparse
+import contextlib
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import sys
+
+SCHEMA = "yhsm.onboarding.v1"
+PHASES = {"menu", "d0_verify", "d0_apply", "mca_pending", "mca_running", "uncertain", "complete"}
+UNCERTAIN = {"d0_apply", "mca_running", "uncertain"}
+VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+(?:\.[0-9]+)?)?")
+
+
+class Rejected(ValueError):
+    pass
+
+
+def require(ok):
+    if not ok:
+        raise Rejected("local state rejected")
+
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def unique(pairs):
+    data = {}
+    for key, value in pairs:
+        require(key not in data)
+        data[key] = value
+    return data
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def identity():
+    machine = Path("/etc/machine-id").read_text(encoding="ascii").strip()
+    require(bool(re.fullmatch(r"[a-f0-9]{32}", machine)) and int(machine, 16) != 0)
+    return digest((machine + ":" + str(os.geteuid())).encode())
+
+
+def regular(path):
+    path = Path(path)
+    require(path.is_absolute())
+    for parent in (path, *path.parents):
+        require(not parent.is_symlink())
+    info = path.stat()
+    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+    return path
+
+
+
+def consent_metadata(info):
+    # Directory timestamps also change for unrelated files. Identity and access
+    # bits are the security inputs; records additionally bind size and ns times.
+    fields = f"{info.st_dev}:{info.st_ino}:{info.st_mode:x}:{info.st_uid}:{info.st_gid}"
+    if not stat.S_ISDIR(info.st_mode):
+        def timestamp(ns):
+            seconds, fraction = divmod(ns, 1_000_000_000)
+            return (datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+                    .strftime("%Y-%m-%d %H:%M:%S.") + f"{fraction:09d} +0000")
+        fields += f":{info.st_nlink}:{info.st_size}:{timestamp(info.st_mtime_ns)}:{timestamp(info.st_ctime_ns)}"
+    return fields + ";"
+
+
+def local_consent_filesystem(paths):
+    # Ordinary fresh stat metadata is coherent on these local filesystems.
+    # Every parent and file must qualify; never cache a remote/helper path.
+    paths = list(paths)
+    try:
+        result = subprocess.run(["stat", "-f", "--format=%T", "--", *map(str, paths)],
+                                capture_output=True, text=True, timeout=2,
+                                env=dict(os.environ, LC_ALL="C", TZ="UTC0"))
+        kinds = result.stdout.splitlines()
+        return (bool(paths) and result.returncode == 0 and len(kinds) == len(paths)
+                and all(kind in {"ext2/ext3", "xfs", "btrfs", "tmpfs", "ramfs", "overlayfs"}
+                        for kind in kinds))
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+class Store:
+    def __init__(self, base=None, binding=None):
+        # Test injection is an in-process constructor argument, never ENV/CLI identity.
+        self.binding = identity() if binding is None else binding
+        self.key = digest(self.binding.encode())
+        self.telemetry_file = "telemetry-" + self.key + ".json"
+        base = Path(base or os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+        require(base.is_absolute())
+        self.root = base / "yhsm" / "onboarding"
+        self.fd = None
+
+    def open(self, create=False):
+        for parent in reversed((self.root, *self.root.parents)):
+            if not parent.exists():
+                if not create:
+                    return False
+                parent.mkdir(mode=0o700)
+            info = parent.lstat()
+            require(stat.S_ISDIR(info.st_mode))
+            require(info.st_uid in (0, os.geteuid()))
+            # Existing system roots may be owned by root; writable parents need sticky protection.
+            require(not info.st_mode & 0o022 or bool(info.st_mode & stat.S_ISVTX))
+        info = self.root.stat()
+        require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700)
+        self.fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        return True
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def _file(self, name, flags, mode=0o600):
+        fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=self.fd)
+        info = os.fstat(fd)
+        try:
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    @contextlib.contextmanager
+    def lock(self):
+        if self.fd is None:
+            self.open(True)
+        fd = self._file("state.lock", os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
+    def read(self, name, observed=None):
+        if self.fd is None and not self.open():
+            return None
+        try:
+            fd = self._file(name, os.O_RDONLY)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, "rb") as stream:
+            initial = os.fstat(stream.fileno()) if observed is not None else None
+            raw = stream.read(32769)
+            if observed is not None:
+                current = os.fstat(stream.fileno())
+                require(consent_metadata(initial) == consent_metadata(current))
+                observed.update(root=os.fstat(self.fd), file=current)
+        require(0 < len(raw) <= 32768)
+        data = json.loads(raw, object_pairs_hook=unique)
+        require(type(data) is dict and data.get("schema") == SCHEMA)
+        if data.get("binding") != self.binding:
+            return None
+        return data
+
+    def write(self, name, data):
+        # Callers hold state.lock and only supply closed, non-secret records.
+        require(self.fd is not None)
+        existing = self.read(name)  # reject unsafe/corrupt files before replacement
+        del existing
+        raw = (json.dumps(dict(data, schema=SCHEMA, binding=self.binding), sort_keys=True) + "\n").encode()
+        require(len(raw) <= 32768)
+        temp = ".next-" + secrets.token_hex(16)
+        fd = self._file(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+            os.fsync(self.fd)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=self.fd)
+
+    def licence(self, value, accept=False):
+        require(bool(re.fullmatch(r"[a-f0-9]{64}", value)))
+        name = "licence-" + self.key + "-" + value + ".json"
+        if accept:
+            with self.lock():
+                self.write(name, dict(kind="licence", digest=value, accepted=True, at=now()))
+        data = self.read(name)
+        return bool(data and set(data) == {"schema", "binding", "kind", "digest", "accepted", "at"}
+                    and data["kind"] == "licence" and data["digest"] == value and data["accepted"] is True)
+
+    def telemetry(self, choice=None, *, observed=None):
+        if choice is not None:
+            require(choice in ("accepted", "denied"))
+            with self.lock():
+                self.write(self.telemetry_file, dict(kind="telemetry", decision=choice, at=now()))
+        data = self.read(self.telemetry_file, observed)
+        if data is None:
+            return "unknown"
+        require(set(data) == {"schema", "binding", "kind", "decision", "at"}
+                and data["kind"] == "telemetry" and data["decision"] in ("accepted", "denied"))
+        return data["decision"]
+
+
+    def telemetry_snapshot(self):
+        # The shell can reuse a parsed decision only while every relevant inode,
+        # access bit and record timestamp still matches this validated read.
+        record = self.root / self.telemetry_file
+        files = (record, Path("/etc/machine-id"), Path(__file__).absolute())
+        paths = list(dict.fromkeys([parent for file in files for parent in reversed(file.parents)] + list(files)))
+        if (len(paths) > 64 or sum(len(str(p)) for p in paths) > 16384
+                or any("\n" in str(p) or "\r" in str(p) for p in paths)
+                or not local_consent_filesystem(paths)):
+            return self.telemetry(), None, []
+        try:
+            before = {p: p.lstat() for p in paths}
+        except OSError:
+            return self.telemetry(), None, []
+        if (not all(stat.S_ISREG(before[p].st_mode) for p in files)
+                or not all(stat.S_ISDIR(before[p].st_mode) for p in paths if p not in files)
+                or before[record].st_ctime_ns % 1_000_000_000 == 0):
+            return self.telemetry(), None, []
+        require(self.binding == identity())
+        observed = {}
+        decision = self.telemetry(observed=observed)
+        after = {p: p.lstat() for p in paths}
+        require(all(consent_metadata(before[p]) == consent_metadata(after[p]) for p in paths))
+        if decision == "unknown":
+            return decision, None, []
+        require(consent_metadata(observed["root"]) == consent_metadata(before[self.root])
+                and consent_metadata(observed["file"]) == consent_metadata(before[record]))
+        return decision, "".join(consent_metadata(after[p]) for p in paths), paths
+
+    def flow_name(self, repo, install):
+        require(bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)))
+        install = Path(install)
+        require(install.is_absolute() and not install.is_symlink())
+        return "flow-" + digest((self.key + "\0" + repo + "\0" + str(install)).encode()) + ".json"
+
+    def flow(self, repo, install, manifest, allow_uncertain=False):
+        data = self.read(self.flow_name(repo, install))
+        if data is None:
+            return None
+        require(set(data) == {"schema", "binding", "kind", "repository", "binary", "sha256", "manifest_sha256",
+                              "version", "phase", "run_id", "at"})
+        require(data["kind"] == "flow" and data["repository"] == repo
+                and data["binary"] == str(Path(install) / "yhsmctl")
+                and data["phase"] in PHASES and bool(VERSION.fullmatch(data["version"]))
+                and bool(re.fullmatch(r"YHSM-[A-F0-9]{16}", data["run_id"])))
+        require(allow_uncertain or data["phase"] not in UNCERTAIN)
+        try:
+            current_binary = regular(data["binary"]).read_bytes()
+        except FileNotFoundError:
+            return None
+        if data["sha256"] != digest(current_binary):
+            return None
+        if data["manifest_sha256"] != digest(regular(manifest).read_bytes()):
+            return None
+        return data
+
+    def installed(self, repo, install, manifest, version, run_id):
+        require(bool(VERSION.fullmatch(version)) and bool(re.fullmatch(r"YHSM-[A-F0-9]{16}", run_id)))
+        binary = regular(str(Path(install) / "yhsmctl"))
+        require(os.access(binary, os.X_OK))
+        with self.lock():
+            old = self.read(self.flow_name(repo, install))
+            require(not old or old.get("phase") not in UNCERTAIN)
+            self.write(self.flow_name(repo, install), dict(kind="flow", repository=repo,
+                binary=str(binary), sha256=digest(binary.read_bytes()),
+                manifest_sha256=digest(regular(manifest).read_bytes()), version=version,
+                phase="menu", run_id=run_id, at=now()))
+
+    def mark(self, repo, install, manifest, phase):
+        require(phase in PHASES)
+        with self.lock():
+            data = self.flow(repo, install, manifest, allow_uncertain=True)
+            require(data is not None)
+            data.update(phase=phase, at=now())
+            self.write(self.flow_name(repo, install), data)
+
+    def reset(self, repo, install, manifest):
+        with self.lock():
+            data = self.flow(repo, install, manifest)
+            require(data is not None and data["phase"] not in UNCERTAIN)
+            data.update(phase="menu", run_id="YHSM-" + secrets.token_hex(8).upper(), at=now())
+            self.write(self.flow_name(repo, install), data)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("licence-check", "licence-accept", "telemetry-get", "telemetry-set", "telemetry-snapshot",
+                                           "flow-get", "installed", "mark", "reset", "lease"))
+    parser.add_argument("args", nargs="*")
+    options = parser.parse_args(argv)
+    state = Store()
+    try:
+        args = options.args
+        command = options.command
+        if command.startswith("licence-"):
+            require(len(args) == 1)
+            return 0 if state.licence(args[0], command == "licence-accept") else 1
+        if command == "telemetry-get":
+            require(not args)
+            print(state.telemetry())
+        elif command == "telemetry-snapshot":
+            require(not args)
+            decision, fingerprint, paths = state.telemetry_snapshot()
+            print("yhsm-telemetry-snapshot-v2")
+            print(decision)
+            if fingerprint:
+                print(fingerprint)
+                print("\n".join(str(path) for path in paths))
+        elif command == "telemetry-set":
+            require(len(args) == 1)
+            state.telemetry(args[0])
+        elif command == "flow-get":
+            require(len(args) == 3)
+            data = state.flow(*args)
+            if data:
+                print("|".join(data[key] for key in ("version", "phase", "run_id")))
+        elif command == "installed":
+            require(len(args) == 5)
+            state.installed(*args)
+        elif command == "mark":
+            require(len(args) == 4)
+            state.mark(*args)
+        elif command == "reset":
+            require(len(args) == 3)
+            state.reset(*args)
+        elif command == "lease":
+            require(not args)
+            state.open(True)
+            os.close(state._file("workflow.lock", os.O_RDWR | os.O_CREAT))
+            print(state.root / "workflow.lock")
+        return 0
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        print("HARD_FAIL_CUSTOMER_EXECUTION_NO_GO: local onboarding state rejected; no automatic retry", file=sys.stderr)
+        return 75
+    finally:
+        state.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY_YHSM_ONBOARDING_STATE
+}
+# END GENERATED ONBOARDING STATE
+
 require_pilot_license_acceptance() {
   local digest answer=""
+  export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
   digest="$(pilot_license_digest)" || return 1
   show_pilot_notice
+  if [[ -n "$ACCEPT_PILOT_LICENSES" && "$ACCEPT_PILOT_LICENSES" != "$digest" ]]; then
+    log_error "Lizenzdigest stimmt nicht; keine Zustimmung fuer diese Texte."
+    return 1
+  fi
+  PILOT_ACCEPTANCE_NEW=0
+  if command -v python3 >/dev/null 2>&1; then
+    local consent_rc=0
+    yhsm_onboarding_state licence-check "$digest" || consent_rc=$?
+    if [[ "$consent_rc" == 0 ]]; then
+      log_ok "PilotLicenseAcceptance=reused digest=$digest scope=host-user"
+      return 0
+    fi
+    [[ "$consent_rc" == 1 ]] || return "$consent_rc"
+  fi
   if [[ -n "$ACCEPT_PILOT_LICENSES" ]]; then
     [[ "$ACCEPT_PILOT_LICENSES" == "$digest" ]] || {
       log_error "Lizenzdigest stimmt nicht; keine Zustimmung fuer diese Texte."
@@ -1749,7 +2242,12 @@ require_pilot_license_acceptance() {
       esac
     done
   fi
-  log_ok "PilotLicenseAcceptance=accepted digest=$digest scope=this-run"
+  PILOT_ACCEPTANCE_NEW=1
+  if command -v python3 >/dev/null 2>&1; then
+    yhsm_onboarding_state licence-accept "$digest" || return 75
+    PILOT_ACCEPTANCE_NEW=0
+  fi
+  log_ok "PilotLicenseAcceptance=accepted digest=$digest scope=host-user"
 }
 
 verify_customer_pilot_license() {
@@ -1789,7 +2287,7 @@ Options:
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
   --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
-  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --accept-pilot-licenses <sha256>  Explicit acceptance stored for this host/user and exact texts.
   --forget-auth                Forget this OS user's cached Stage-0 logins and stop.
   --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
                                requires --install-dir, consumes an existing RAM handoff.
@@ -1804,7 +2302,7 @@ Stage-0 scope:
   - For private targets installs GitHub CLI from the official signed Debian repository.
   - Prefers a working secure system credential store; headless hosts may use a verified RAM-backed session-only GitHub configuration.
   - Uses GitHub device/web authentication without launching a browser on the server; token-bearing GitHub auth environment variables are rejected.
-  - Verifies private repository and issue read access, clones the selected branch and prints readback.
+  - Verifies private repository access; issue access is needed only for enabled feedback or the explicit issue test. Clones the selected branch and prints readback.
   - Optional issue smoke test is explicit and writes only a sanitized temporary GitHub issue.
   - Reads the local DNS search domain and _pki.<domain> TXT binding before GitHub authentication.
   - DNS selects only the customer channel; GitHub Device/Web verifies access to that exact target.
@@ -2535,7 +3033,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     log_info "(dry-run) prefer and verify a secure system credential store; otherwise use verified RAM-backed session-only auth"
     log_info "(dry-run) authenticate with GitHub device/web flow without opening a local browser; enter the one-time code at https://github.com/login/device from a workstation browser"
     log_info "(dry-run) configure gh as the Git credential helper only for the selected persistent or session-only context"
-    log_info "(dry-run) verify private repository and issue read access"
+    log_info "(dry-run) verify private repository access; require issue access only for enabled feedback or an explicit issue smoke test"
   fi
   log_info "(dry-run) clone exact branch '$TARGET_BRANCH' from $TARGET_REPO"
   log_info "(dry-run) print repository/branch/head readback"
@@ -2578,6 +3076,19 @@ else
   log_ok "Baseline client-access packages already present."
 fi
 
+if [[ "${PILOT_ACCEPTANCE_NEW:-0}" == 1 ]]; then
+  yhsm_onboarding_state licence-accept "$(pilot_license_digest)" || exit 75
+fi
+telemetry_decision="$(yhsm_onboarding_state telemetry-get)" || exit 75
+if [[ "$telemetry_decision" == unknown && -t 0 && -t 1 ]]; then
+  yhsm_ui_prompt telemetry.choice
+  IFS= read -r telemetry_answer || telemetry_answer=''
+  case "$telemetry_answer" in j|J|y|Y) telemetry_decision=accepted ;; *) telemetry_decision=denied ;; esac
+  yhsm_onboarding_state telemetry-set "$telemetry_decision" || exit 75
+fi
+if [[ "$telemetry_decision" == accepted ]]; then export YHSM_AUTOMATIC_ISSUE_FEEDBACK=1;
+else export YHSM_AUTOMATIC_ISSUE_FEEDBACK=0 YHSM_SUPPORT_CHANNEL=DISABLED; fi
+log_info "$(yhsm_ui_text telemetry.separate)"
 yhsm_ui_heading phase.target
 resolve_target_repository || exit 2
 valid_target_repo "$TARGET_REPO" || { log_error "Invalid --target-repo."; exit 2; }
@@ -4117,6 +4628,29 @@ finish_session_auth() {
   log_ok "Session-only GitHub authentication state removed."
 }
 
+verify_private_repository_access() {
+  local access_rc
+  if run_interruptible_child gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null; then
+    :
+  else
+    access_rc=$?
+    log_error "Authenticated GitHub account cannot access the target repository."
+    return "$access_rc"
+  fi
+  if [[ "${YHSM_AUTOMATIC_ISSUE_FEEDBACK:-0}" == 1 || "$ISSUE_SMOKE_TEST" -eq 1 ]]; then
+    if run_interruptible_child gh issue list --repo "$TARGET_REPO" --limit 1 >/dev/null; then
+      :
+    else
+      access_rc=$?
+      log_error "Authenticated GitHub account cannot read issues in the target repository."
+      return "$access_rc"
+    fi
+    log_ok "Private repository and issue read access verified."
+  else
+    log_ok "Private repository access verified; issue access is not required with automatic feedback disabled."
+  fi
+}
+
 if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   yhsm_ui_heading phase.auth
   install_gh
@@ -4146,21 +4680,7 @@ if [[ "$TARGET_VISIBILITY" == "private" ]]; then
   }
   log_info "GitHubAccount=$github_account"
 
-  if run_interruptible_child gh repo view "$TARGET_REPO" --json nameWithOwner,visibility,defaultBranchRef >/dev/null; then
-    :
-  else
-    stage0_child_rc=$?
-    log_error "Authenticated GitHub account cannot access the target repository."
-    exit "$stage0_child_rc"
-  fi
-  if run_interruptible_child gh issue list --repo "$TARGET_REPO" --limit 1 >/dev/null; then
-    :
-  else
-    stage0_child_rc=$?
-    log_error "Authenticated GitHub account cannot read issues in the target repository."
-    exit "$stage0_child_rc"
-  fi
-  log_ok "Private repository and issue read access verified."
+  verify_private_repository_access || exit "$?"
 fi
 
 validate_initialized_submodules() {
@@ -4536,6 +5056,9 @@ if [[ "$ISSUE_SMOKE_TEST" -eq 1 ]]; then run_issue_smoke_test; fi
 
 if [[ -f "$dest_path/client/manifest.json" ]]; then
   verify_customer_pilot_license "$dest_path" || exit 1
+  # Customer bootstrap binds feedback only after it has restored its workflow.
+  # Consent denial must not create a Stage-0 Issue before that decision.
+
 fi
 
 if [[ "$SESSION_AUTH_ACTIVE" -eq 1 ]]; then

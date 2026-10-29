@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3db07b4c8b0369fd7f740444c47557c44c2bd99c/bootstrap.sh && echo '7d548cd873cb1a1297df40563fb273fce5e65bcb590891a45ae70b36bcd947c3  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/fa15bb00c8c9ca719433ae4baf63120404380383/bootstrap.sh && echo '455fb53fb59d555e105ba00f6b4c8a78ebd184ef241680e233c3d3954537fe9e  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -39,6 +39,8 @@ The download URL is bound to an immutable Public commit and the SHA-256 is bound
 ## Safe use
 
 Read `LICENSE` before use. Run the script only on a Debian/Ubuntu pilot host. A directly downloaded bootstrap file is not assumed to have an executable mode, so invoke it explicitly with Bash.
+
+Licence acceptance is remembered locally for the same host, user and unchanged licence text. A changed licence requires acceptance again. Automatic private diagnostic feedback is a separate, optional choice: both acceptance and refusal are remembered. Refusing telemetry does not prevent the normal workflow. A restart can continue a verified installation; target operations retain their own fresh checks and explicit authorizations.
 
 For the normal private onboarding path, the execution step is intentionally short:
 
@@ -87,27 +89,30 @@ This Stage-0 package contains only `bootstrap.sh`, this README, and the propriet
 
 ## License and diagnostics notice
 
-Normal Stage-0 asks for one confirmation before package
-installation, DNS lookup and GitHub login. It covers the existing Stage-0 pilot
+Without a matching local receipt, normal Stage-0 asks for one confirmation
+before package installation, DNS lookup and GitHub login. It covers the existing Stage-0 pilot
 terms and the existing customer interim pilot terms together. Enter `d` to read
 both full texts, `j` or `yes` to accept, or Enter/`n` to stop. EOF also stops.
-Acceptance is for this execution only; it does not create a persistent consent
-file or authorize a new customer, productive use or target-system action.
+Acceptance is recorded locally for this host, OS user and exact licence digest.
+A valid receipt is reused; changed terms require fresh acceptance. It does not
+authorize a new customer, productive use or target-system action.
 
 `--show-licenses` prints the embedded exact texts and their combined SHA-256
-without authentication or installation. Noninteractive normal Stage-0 requires
+without authentication or installation. Without a matching receipt, noninteractive normal Stage-0 requires
 explicit `--accept-pilot-licenses <sha256>` matching those texts; a piped yes or
 a generic confirmation flag is insufficient. `--help`, `--dry-run` and the
 existing `--forget-auth` recovery path do not require or record acceptance.
 The isolated local Candidate lane retains its existing separate contract.
 
-The notice reports the existing execution-feedback setting. Only the literal
-`YHSM_AUTOMATIC_ISSUE_FEEDBACK=1` enables that separate customer feature.
-License acceptance never changes it. Enabled feedback uses sanitized technical
-status metadata in the authorized private GitHub repository for diagnostics;
-it does not automatically upload full logs or files. Additional support logs
-must be checked for sensitive data before sharing. This is not an anonymity
-claim, blanket upload consent or a new data-retention policy.
+Automatic private diagnostic feedback has its own persisted opt-in choice.
+Licence acceptance never enables it. Both acceptance and refusal are remembered
+for the host and OS user; saved refusal overrides an inherited
+`YHSM_AUTOMATIC_ISSUE_FEEDBACK=1`. Refusal blocks automatic Issue events, comments
+and replay without granting or removing target-operation authorization.
+With consent, feedback uses sanitized technical status metadata in the exactly
+authenticated private repository. It does not upload full logs or files.
+Additional support logs must be checked for sensitive data before sharing.
+This is not an anonymity claim, blanket upload consent or a new data-retention policy.
 
 Before a normal customer package starts, its root `LICENSE` must match the
 embedded customer terms byte for byte. Missing, changed or symlinked terms stop

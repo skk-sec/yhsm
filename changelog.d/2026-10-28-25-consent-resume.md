@@ -1,0 +1,1 @@
+Remember unchanged licence acceptance per host and user. Keep telemetry optional and persist refusal independently. Carry the compatible private workflow into a verified customer installation without creating an Issue before consent is restored.
