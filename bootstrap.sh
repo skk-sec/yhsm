@@ -1923,14 +1923,18 @@ def consent_metadata(info):
     return fields + ";"
 
 
-def local_consent_filesystem(root):
-    # Unknown/remote filesystems keep the existing fresh Python read path.
+def local_consent_filesystem(paths):
+    # Ordinary fresh stat metadata is coherent on these local filesystems.
+    # Every parent and file must qualify; never cache a remote/helper path.
+    paths = list(paths)
     try:
-        result = subprocess.run(["stat", "-f", "--format=%T", "--", str(root)],
+        result = subprocess.run(["stat", "-f", "--format=%T", "--", *map(str, paths)],
                                 capture_output=True, text=True, timeout=2,
                                 env=dict(os.environ, LC_ALL="C", TZ="UTC0"))
-        return result.returncode == 0 and result.stdout.strip() in {
-            "ext2/ext3", "xfs", "btrfs", "tmpfs", "ramfs", "overlayfs"}
+        kinds = result.stdout.splitlines()
+        return (bool(paths) and result.returncode == 0 and len(kinds) == len(paths)
+                and all(kind in {"ext2/ext3", "xfs", "btrfs", "tmpfs", "ramfs", "overlayfs"}
+                        for kind in kinds))
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -2061,7 +2065,7 @@ class Store:
         paths = list(dict.fromkeys([parent for file in files for parent in reversed(file.parents)] + list(files)))
         if (len(paths) > 64 or sum(len(str(p)) for p in paths) > 16384
                 or any("\n" in str(p) or "\r" in str(p) for p in paths)
-                or not local_consent_filesystem(self.root)):
+                or not local_consent_filesystem(paths)):
             return self.telemetry(), None, []
         try:
             before = {p: p.lstat() for p in paths}
@@ -2156,7 +2160,7 @@ def main(argv=None):
         elif command == "telemetry-snapshot":
             require(not args)
             decision, fingerprint, paths = state.telemetry_snapshot()
-            print("yhsm-telemetry-snapshot-v1")
+            print("yhsm-telemetry-snapshot-v2")
             print(decision)
             if fingerprint:
                 print(fingerprint)
