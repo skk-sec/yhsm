@@ -89,27 +89,30 @@ This Stage-0 package contains only `bootstrap.sh`, this README, and the propriet
 
 ## License and diagnostics notice
 
-Normal Stage-0 asks for one confirmation before package
-installation, DNS lookup and GitHub login. It covers the existing Stage-0 pilot
+Without a matching local receipt, normal Stage-0 asks for one confirmation
+before package installation, DNS lookup and GitHub login. It covers the existing Stage-0 pilot
 terms and the existing customer interim pilot terms together. Enter `d` to read
 both full texts, `j` or `yes` to accept, or Enter/`n` to stop. EOF also stops.
-Acceptance is for this execution only; it does not create a persistent consent
-file or authorize a new customer, productive use or target-system action.
+Acceptance is recorded locally for this host, OS user and exact licence digest.
+A valid receipt is reused; changed terms require fresh acceptance. It does not
+authorize a new customer, productive use or target-system action.
 
 `--show-licenses` prints the embedded exact texts and their combined SHA-256
-without authentication or installation. Noninteractive normal Stage-0 requires
+without authentication or installation. Without a matching receipt, noninteractive normal Stage-0 requires
 explicit `--accept-pilot-licenses <sha256>` matching those texts; a piped yes or
 a generic confirmation flag is insufficient. `--help`, `--dry-run` and the
 existing `--forget-auth` recovery path do not require or record acceptance.
 The isolated local Candidate lane retains its existing separate contract.
 
-The notice reports the existing execution-feedback setting. Only the literal
-`YHSM_AUTOMATIC_ISSUE_FEEDBACK=1` enables that separate customer feature.
-License acceptance never changes it. Enabled feedback uses sanitized technical
-status metadata in the authorized private GitHub repository for diagnostics;
-it does not automatically upload full logs or files. Additional support logs
-must be checked for sensitive data before sharing. This is not an anonymity
-claim, blanket upload consent or a new data-retention policy.
+Automatic private diagnostic feedback has its own persisted opt-in choice.
+Licence acceptance never enables it. Both acceptance and refusal are remembered
+for the host and OS user; saved refusal overrides an inherited
+`YHSM_AUTOMATIC_ISSUE_FEEDBACK=1`. Refusal blocks automatic Issue events, comments
+and replay without granting or removing target-operation authorization.
+With consent, feedback uses sanitized technical status metadata in the exactly
+authenticated private repository. It does not upload full logs or files.
+Additional support logs must be checked for sensitive data before sharing.
+This is not an anonymity claim, blanket upload consent or a new data-retention policy.
 
 Before a normal customer package starts, its root `LICENSE` must match the
 embedded customer terms byte for byte. Missing, changed or symlinked terms stop
