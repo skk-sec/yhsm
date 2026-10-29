@@ -1859,6 +1859,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import subprocess
 import sys
 
 SCHEMA = "yhsm.onboarding.v1"
@@ -1906,6 +1907,32 @@ def regular(path):
     info = path.stat()
     require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
     return path
+
+
+
+def consent_metadata(info):
+    # Directory timestamps also change for unrelated files. Identity and access
+    # bits are the security inputs; records additionally bind size and ns times.
+    fields = f"{info.st_dev}:{info.st_ino}:{info.st_mode:x}:{info.st_uid}:{info.st_gid}"
+    if not stat.S_ISDIR(info.st_mode):
+        def timestamp(ns):
+            seconds, fraction = divmod(ns, 1_000_000_000)
+            return (datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+                    .strftime("%Y-%m-%d %H:%M:%S.") + f"{fraction:09d} +0000")
+        fields += f":{info.st_nlink}:{info.st_size}:{timestamp(info.st_mtime_ns)}:{timestamp(info.st_ctime_ns)}"
+    return fields + ";"
+
+
+def local_consent_filesystem(root):
+    # Unknown/remote filesystems keep the existing fresh Python read path.
+    try:
+        result = subprocess.run(["stat", "-f", "--format=%T", "--", str(root)],
+                                capture_output=True, text=True, timeout=2,
+                                env=dict(os.environ, LC_ALL="C", TZ="UTC0"))
+        return result.returncode == 0 and result.stdout.strip() in {
+            "ext2/ext3", "xfs", "btrfs", "tmpfs", "ramfs", "overlayfs"}
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 class Store:
@@ -1962,7 +1989,7 @@ class Store:
         finally:
             os.close(fd)
 
-    def read(self, name):
+    def read(self, name, observed=None):
         if self.fd is None and not self.open():
             return None
         try:
@@ -1970,7 +1997,12 @@ class Store:
         except FileNotFoundError:
             return None
         with os.fdopen(fd, "rb") as stream:
+            initial = os.fstat(stream.fileno()) if observed is not None else None
             raw = stream.read(32769)
+            if observed is not None:
+                current = os.fstat(stream.fileno())
+                require(consent_metadata(initial) == consent_metadata(current))
+                observed.update(root=os.fstat(self.fd), file=current)
         require(0 < len(raw) <= 32768)
         data = json.loads(raw, object_pairs_hook=unique)
         require(type(data) is dict and data.get("schema") == SCHEMA)
@@ -2008,17 +2040,47 @@ class Store:
         return bool(data and set(data) == {"schema", "binding", "kind", "digest", "accepted", "at"}
                     and data["kind"] == "licence" and data["digest"] == value and data["accepted"] is True)
 
-    def telemetry(self, choice=None):
+    def telemetry(self, choice=None, *, observed=None):
         if choice is not None:
             require(choice in ("accepted", "denied"))
             with self.lock():
                 self.write(self.telemetry_file, dict(kind="telemetry", decision=choice, at=now()))
-        data = self.read(self.telemetry_file)
+        data = self.read(self.telemetry_file, observed)
         if data is None:
             return "unknown"
         require(set(data) == {"schema", "binding", "kind", "decision", "at"}
                 and data["kind"] == "telemetry" and data["decision"] in ("accepted", "denied"))
         return data["decision"]
+
+
+    def telemetry_snapshot(self):
+        # The shell can reuse a parsed decision only while every relevant inode,
+        # access bit and record timestamp still matches this validated read.
+        record = self.root / self.telemetry_file
+        files = (record, Path("/etc/machine-id"), Path(__file__).absolute())
+        paths = list(dict.fromkeys([parent for file in files for parent in reversed(file.parents)] + list(files)))
+        if (len(paths) > 64 or sum(len(str(p)) for p in paths) > 16384
+                or any("\n" in str(p) or "\r" in str(p) for p in paths)
+                or not local_consent_filesystem(self.root)):
+            return self.telemetry(), None, []
+        try:
+            before = {p: p.lstat() for p in paths}
+        except OSError:
+            return self.telemetry(), None, []
+        if (not all(stat.S_ISREG(before[p].st_mode) for p in files)
+                or not all(stat.S_ISDIR(before[p].st_mode) for p in paths if p not in files)
+                or before[record].st_ctime_ns % 1_000_000_000 == 0):
+            return self.telemetry(), None, []
+        require(self.binding == identity())
+        observed = {}
+        decision = self.telemetry(observed=observed)
+        after = {p: p.lstat() for p in paths}
+        require(all(consent_metadata(before[p]) == consent_metadata(after[p]) for p in paths))
+        if decision == "unknown":
+            return decision, None, []
+        require(consent_metadata(observed["root"]) == consent_metadata(before[self.root])
+                and consent_metadata(observed["file"]) == consent_metadata(before[record]))
+        return decision, "".join(consent_metadata(after[p]) for p in paths), paths
 
     def flow_name(self, repo, install):
         require(bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)))
@@ -2077,7 +2139,7 @@ class Store:
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("licence-check", "licence-accept", "telemetry-get", "telemetry-set",
+    parser.add_argument("command", choices=("licence-check", "licence-accept", "telemetry-get", "telemetry-set", "telemetry-snapshot",
                                            "flow-get", "installed", "mark", "reset", "lease"))
     parser.add_argument("args", nargs="*")
     options = parser.parse_args(argv)
@@ -2091,6 +2153,14 @@ def main(argv=None):
         if command == "telemetry-get":
             require(not args)
             print(state.telemetry())
+        elif command == "telemetry-snapshot":
+            require(not args)
+            decision, fingerprint, paths = state.telemetry_snapshot()
+            print("yhsm-telemetry-snapshot-v1")
+            print(decision)
+            if fingerprint:
+                print(fingerprint)
+                print("\n".join(str(path) for path in paths))
         elif command == "telemetry-set":
             require(len(args) == 1)
             state.telemetry(args[0])
