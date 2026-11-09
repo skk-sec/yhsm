@@ -169,6 +169,13 @@ unset -f command
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn('PilotLicenseDigest=fd3948443f3b0dea85413d4f1094b1ac5aec90cf739ade8b230d665f60732b38',result.stdout)
             self.assertFalse(list(Path(tmp).iterdir()))
+            help_result = subprocess.run(['bash',str(ROOT/'bootstrap.sh'),'--help'],
+                env=dict(os.environ,HOME=tmp,YHSM_UI_LANGUAGE='de'),
+                capture_output=True,text=True,timeout=10)
+            self.assertEqual(help_result.returncode,0,help_result.stderr)
+            self.assertNotIn('Zustimmung zu diesen Texten für diesen Lauf.',help_result.stdout)
+            self.assertIn('Zustimmung für diesen Host/Benutzer',help_result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

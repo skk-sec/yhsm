@@ -738,7 +738,7 @@ Optionen:
   --public-target             Öffentliches Ziel: keine GitHub-Anmeldung benötigt.
   --issue-smoke-test          Nach privater Anmeldung ein bereinigtes temporäres Issue erstellen, kommentieren, lesen und schließen.
   --show-licenses             Beide exakten Lizenztexte und gemeinsamen SHA-256 anzeigen; beenden.
-  --accept-pilot-licenses <sha256>  Ausdrückliche Zustimmung zu diesen Texten für diesen Lauf.
+  --accept-pilot-licenses <sha256>  Ausdrückliche Zustimmung für diesen Host/Benutzer und genau diese Texte speichern.
   --forget-auth               Stage-0-Anmeldecache dieses OS-Benutzers löschen; beenden.
   --stage0-candidate          Lokaler manifestgebundener Kandidat im benachbarten ../../client; benötigt --install-dir und RAM-Handoff.
   --stage0-produce-candidate  Frische RAM-Anmeldung/Übergabe; nur lokaler Kandidat, keine manuellen Identitäts-/Repository-/Versionsargumente.
