@@ -7,7 +7,7 @@ This small public package bootstraps repository access for an explicitly authori
 Download and verify the currently qualified Stage-0 bootstrap in one copy-and-paste step:
 
 ```sh
-curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/3db07b4c8b0369fd7f740444c47557c44c2bd99c/bootstrap.sh && echo '7d548cd873cb1a1297df40563fb273fce5e65bcb590891a45ae70b36bcd947c3  bootstrap.sh' | sha256sum -c -
+curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/skk-sec/yhsm/21acfbbdb0eb73f9fcba57f1676c074782888484/bootstrap.sh && echo '675ed49951e2b1b4abdc2d7e1663f1b213b5cb7698d9fce81c53d67e32e3769b  bootstrap.sh' | sha256sum -c -
 ```
 
 The expected result is:
@@ -87,15 +87,25 @@ This Stage-0 package contains only `bootstrap.sh`, this README, and the propriet
 
 ## License and diagnostics notice
 
-Normal Stage-0 asks for one confirmation before package
+Without a matching local receipt, Stage-0 asks for one confirmation before package
 installation, DNS lookup and GitHub login. It covers the existing Stage-0 pilot
 terms and the existing customer interim pilot terms together. Enter `d` to read
 both full texts, `j` or `yes` to accept, or Enter/`n` to stop. EOF also stops.
-Acceptance is for this execution only; it does not create a persistent consent
-file or authorize a new customer, productive use or target-system action.
+Acceptance is stored privately for this host, effective OS user and exact licence
+texts. Further starts and software updates reuse that acceptance when the terms
+are unchanged. Changed terms require fresh acceptance. Corrupt or unsafe records
+stop the flow; they are never treated as consent. Previous per-run acceptance is
+not converted into a receipt. The first start of this version therefore requires
+one explicit acceptance. This does not authorize a new customer, productive use,
+extend the pilot duration or grant target-system permissions.
+
+The receipt contains the licence digest, local host/user binding and acceptance
+time under the OS user's private state directory (`XDG_STATE_HOME`, or
+`~/.local/state`), within `yhsm/onboarding`. It contains no password, token or key.
+Authentication expiry and `--forget-auth` remain independent of licence consent.
 
 `--show-licenses` prints the embedded exact texts and their combined SHA-256
-without authentication or installation. Noninteractive normal Stage-0 requires
+without authentication or installation. Without a matching receipt, noninteractive Stage-0 requires
 explicit `--accept-pilot-licenses <sha256>` matching those texts; a piped yes or
 a generic confirmation flag is insufficient. `--help`, `--dry-run` and the
 existing `--forget-auth` recovery path do not require or record acceptance.
