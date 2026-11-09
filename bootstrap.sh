@@ -658,8 +658,8 @@ yhsm_ui_text() {
     de:message.193) printf '%s' 'Stage-0-Onboarding abgeschlossen.' ;;
     en:license.title) printf '%s' 'Confirm pilot licences' ;;
     de:license.title) printf '%s' 'Pilotlizenzen bestätigen' ;;
-    en:license.scope) printf '%s' 'Acceptance applies to this execution only.' ;;
-    de:license.scope) printf '%s' 'Diese Zustimmung gilt nur für diesen Lauf.' ;;
+    en:license.scope) printf '%s' 'Acceptance is stored for this host, OS user and these exact licence texts.' ;;
+    de:license.scope) printf '%s' 'Die Zustimmung wird für diesen Host, OS-Benutzer und genau diese Lizenztexte gespeichert.' ;;
     en:license.options) printf '%s' '[y/j] Accept   [d] Show licence texts   [Enter/n] Stop' ;;
     de:license.options) printf '%s' '[j/y] Zustimmen   [d] Lizenztexte anzeigen   [Enter/n] Beenden' ;;
     en:input.choice) printf '%s' 'Your choice: ' ;;
@@ -698,7 +698,7 @@ Options:
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
   --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
-  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --accept-pilot-licenses <sha256>  Explicit acceptance stored for this host/user and exact texts.
   --forget-auth                Forget this OS user'"'"'s cached Stage-0 logins and stop.
   --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
                                requires --install-dir, consumes an existing RAM handoff.
@@ -790,7 +790,7 @@ Options:
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
   --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
-  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --accept-pilot-licenses <sha256>  Explicit acceptance stored for this host/user and exact texts.
   --forget-auth                Forget this OS user'"'"'s cached Stage-0 logins and stop.
   --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
                                requires --install-dir, consumes an existing RAM handoff.
@@ -1005,7 +1005,7 @@ Stage-0 scope:
   if [[ "$text" == 'Installing missing client-access packages.' ]]; then yhsm_ui_text message.075; return; fi
   if [[ "$text" == 'Unable to resolve the existing clone head.' ]]; then yhsm_ui_text message.154; return; fi
   if [[ "$text" == 'Unable to inspect existing-clone ancestry.' ]]; then yhsm_ui_text message.155; return; fi
-  if [[ "$text" == 'Acceptance applies to this execution only.' ]]; then yhsm_ui_text license.scope; return; fi
+  if [[ "$text" == 'Acceptance is stored for this host, OS user and these exact licence texts.' ]]; then yhsm_ui_text license.scope; return; fi
   if [[ "$text" == 'Required package manager missing: apt-get' ]]; then yhsm_ui_text message.055; return; fi
   if [[ "$text" == 'Keine Lizenzzustimmung; Stage-0 beendet.' ]]; then yhsm_ui_text message.013; return; fi
   if [[ "$text" == 'GitHub authentication already present.' ]]; then yhsm_ui_text message.123; return; fi
@@ -1723,10 +1723,383 @@ show_pilot_notice() {
   log_info "Die Lizenzzustimmung aendert weder Feedback-Einstellung noch HSM-/Zielsystemfreigaben. Abschliessende juristische Pruefung ausstehend."
 }
 
+# BEGIN GENERATED LICENCE RECEIPT
+yhsm_onboarding_state() {
+  case "${1:-}" in licence-check|licence-accept) ;; *) return 75 ;; esac
+  python3 -I -B - "$@" <<'PY_YHSM_STAGE0_LICENCE'
+"""Private, host/user-bound consent and progress; never stores credentials (#3204)."""
+import argparse
+import contextlib
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import sys
+
+SCHEMA = "yhsm.onboarding.v1"
+PHASES = {"menu", "d0_verify", "d0_apply", "mca_pending", "mca_running", "uncertain", "complete"}
+UNCERTAIN = {"d0_apply", "mca_running", "uncertain"}
+VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+(?:\.[0-9]+)?)?")
+
+
+class Rejected(ValueError):
+    pass
+
+
+def require(ok):
+    if not ok:
+        raise Rejected("local state rejected")
+
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def unique(pairs):
+    data = {}
+    for key, value in pairs:
+        require(key not in data)
+        data[key] = value
+    return data
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def identity():
+    machine = Path("/etc/machine-id").read_text(encoding="ascii").strip()
+    require(bool(re.fullmatch(r"[a-f0-9]{32}", machine)) and int(machine, 16) != 0)
+    return digest((machine + ":" + str(os.geteuid())).encode())
+
+
+def regular(path):
+    path = Path(path)
+    require(path.is_absolute())
+    for parent in (path, *path.parents):
+        require(not parent.is_symlink())
+    info = path.stat()
+    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+    return path
+
+
+
+def consent_metadata(info):
+    # Directory timestamps also change for unrelated files. Identity and access
+    # bits are the security inputs; records additionally bind size and ns times.
+    fields = f"{info.st_dev}:{info.st_ino}:{info.st_mode:x}:{info.st_uid}:{info.st_gid}"
+    if not stat.S_ISDIR(info.st_mode):
+        def timestamp(ns):
+            seconds, fraction = divmod(ns, 1_000_000_000)
+            return (datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+                    .strftime("%Y-%m-%d %H:%M:%S.") + f"{fraction:09d} +0000")
+        fields += f":{info.st_nlink}:{info.st_size}:{timestamp(info.st_mtime_ns)}:{timestamp(info.st_ctime_ns)}"
+    return fields + ";"
+
+
+def local_consent_filesystem(paths):
+    # Ordinary fresh stat metadata is coherent on these local filesystems.
+    # Every parent and file must qualify; never cache a remote/helper path.
+    paths = list(paths)
+    try:
+        result = subprocess.run(["stat", "-f", "--format=%T", "--", *map(str, paths)],
+                                capture_output=True, text=True, timeout=2,
+                                env=dict(os.environ, LC_ALL="C", TZ="UTC0"))
+        kinds = result.stdout.splitlines()
+        return (bool(paths) and result.returncode == 0 and len(kinds) == len(paths)
+                and all(kind in {"ext2/ext3", "xfs", "btrfs", "tmpfs", "ramfs", "overlayfs"}
+                        for kind in kinds))
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+class Store:
+    def __init__(self, base=None, binding=None):
+        # Test injection is an in-process constructor argument, never ENV/CLI identity.
+        self.binding = identity() if binding is None else binding
+        self.key = digest(self.binding.encode())
+        self.telemetry_file = "telemetry-" + self.key + ".json"
+        base = Path(base or os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+        require(base.is_absolute())
+        self.root = base / "yhsm" / "onboarding"
+        self.fd = None
+
+    def open(self, create=False):
+        for parent in reversed((self.root, *self.root.parents)):
+            if not parent.exists():
+                if not create:
+                    return False
+                parent.mkdir(mode=0o700)
+            info = parent.lstat()
+            require(stat.S_ISDIR(info.st_mode))
+            require(info.st_uid in (0, os.geteuid()))
+            # Existing system roots may be owned by root; writable parents need sticky protection.
+            require(not info.st_mode & 0o022 or bool(info.st_mode & stat.S_ISVTX))
+        info = self.root.stat()
+        require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700)
+        self.fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        return True
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def _file(self, name, flags, mode=0o600):
+        fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=self.fd)
+        info = os.fstat(fd)
+        try:
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    @contextlib.contextmanager
+    def lock(self):
+        if self.fd is None:
+            self.open(True)
+        fd = self._file("state.lock", os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
+    def read(self, name, observed=None):
+        if self.fd is None and not self.open():
+            return None
+        try:
+            fd = self._file(name, os.O_RDONLY)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, "rb") as stream:
+            initial = os.fstat(stream.fileno()) if observed is not None else None
+            raw = stream.read(32769)
+            if observed is not None:
+                current = os.fstat(stream.fileno())
+                require(consent_metadata(initial) == consent_metadata(current))
+                observed.update(root=os.fstat(self.fd), file=current)
+        require(0 < len(raw) <= 32768)
+        data = json.loads(raw, object_pairs_hook=unique)
+        require(type(data) is dict and data.get("schema") == SCHEMA)
+        if data.get("binding") != self.binding:
+            return None
+        return data
+
+    def write(self, name, data):
+        # Callers hold state.lock and only supply closed, non-secret records.
+        require(self.fd is not None)
+        existing = self.read(name)  # reject unsafe/corrupt files before replacement
+        del existing
+        raw = (json.dumps(dict(data, schema=SCHEMA, binding=self.binding), sort_keys=True) + "\n").encode()
+        require(len(raw) <= 32768)
+        temp = ".next-" + secrets.token_hex(16)
+        fd = self._file(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+            os.fsync(self.fd)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=self.fd)
+
+    def licence(self, value, accept=False):
+        require(bool(re.fullmatch(r"[a-f0-9]{64}", value)))
+        name = "licence-" + self.key + "-" + value + ".json"
+        if accept:
+            with self.lock():
+                self.write(name, dict(kind="licence", digest=value, accepted=True, at=now()))
+        data = self.read(name)
+        return bool(data and set(data) == {"schema", "binding", "kind", "digest", "accepted", "at"}
+                    and data["kind"] == "licence" and data["digest"] == value and data["accepted"] is True)
+
+    def telemetry(self, choice=None, *, observed=None):
+        if choice is not None:
+            require(choice in ("accepted", "denied"))
+            with self.lock():
+                self.write(self.telemetry_file, dict(kind="telemetry", decision=choice, at=now()))
+        data = self.read(self.telemetry_file, observed)
+        if data is None:
+            return "unknown"
+        require(set(data) == {"schema", "binding", "kind", "decision", "at"}
+                and data["kind"] == "telemetry" and data["decision"] in ("accepted", "denied"))
+        return data["decision"]
+
+
+    def telemetry_snapshot(self):
+        # The shell can reuse a parsed decision only while every relevant inode,
+        # access bit and record timestamp still matches this validated read.
+        record = self.root / self.telemetry_file
+        files = (record, Path("/etc/machine-id"), Path(__file__).absolute())
+        paths = list(dict.fromkeys([parent for file in files for parent in reversed(file.parents)] + list(files)))
+        if (len(paths) > 64 or sum(len(str(p)) for p in paths) > 16384
+                or any("\n" in str(p) or "\r" in str(p) for p in paths)
+                or not local_consent_filesystem(paths)):
+            return self.telemetry(), None, []
+        try:
+            before = {p: p.lstat() for p in paths}
+        except OSError:
+            return self.telemetry(), None, []
+        if (not all(stat.S_ISREG(before[p].st_mode) for p in files)
+                or not all(stat.S_ISDIR(before[p].st_mode) for p in paths if p not in files)
+                or before[record].st_ctime_ns % 1_000_000_000 == 0):
+            return self.telemetry(), None, []
+        require(self.binding == identity())
+        observed = {}
+        decision = self.telemetry(observed=observed)
+        after = {p: p.lstat() for p in paths}
+        require(all(consent_metadata(before[p]) == consent_metadata(after[p]) for p in paths))
+        if decision == "unknown":
+            return decision, None, []
+        require(consent_metadata(observed["root"]) == consent_metadata(before[self.root])
+                and consent_metadata(observed["file"]) == consent_metadata(before[record]))
+        return decision, "".join(consent_metadata(after[p]) for p in paths), paths
+
+    def flow_name(self, repo, install):
+        require(bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)))
+        install = Path(install)
+        require(install.is_absolute() and not install.is_symlink())
+        return "flow-" + digest((self.key + "\0" + repo + "\0" + str(install)).encode()) + ".json"
+
+    def flow(self, repo, install, manifest, allow_uncertain=False):
+        data = self.read(self.flow_name(repo, install))
+        if data is None:
+            return None
+        require(set(data) == {"schema", "binding", "kind", "repository", "binary", "sha256", "manifest_sha256",
+                              "version", "phase", "run_id", "at"})
+        require(data["kind"] == "flow" and data["repository"] == repo
+                and data["binary"] == str(Path(install) / "yhsmctl")
+                and data["phase"] in PHASES and bool(VERSION.fullmatch(data["version"]))
+                and bool(re.fullmatch(r"YHSM-[A-F0-9]{16}", data["run_id"])))
+        require(allow_uncertain or data["phase"] not in UNCERTAIN)
+        try:
+            current_binary = regular(data["binary"]).read_bytes()
+        except FileNotFoundError:
+            return None
+        if data["sha256"] != digest(current_binary):
+            return None
+        if data["manifest_sha256"] != digest(regular(manifest).read_bytes()):
+            return None
+        return data
+
+    def installed(self, repo, install, manifest, version, run_id):
+        require(bool(VERSION.fullmatch(version)) and bool(re.fullmatch(r"YHSM-[A-F0-9]{16}", run_id)))
+        binary = regular(str(Path(install) / "yhsmctl"))
+        require(os.access(binary, os.X_OK))
+        with self.lock():
+            old = self.read(self.flow_name(repo, install))
+            require(not old or old.get("phase") not in UNCERTAIN)
+            self.write(self.flow_name(repo, install), dict(kind="flow", repository=repo,
+                binary=str(binary), sha256=digest(binary.read_bytes()),
+                manifest_sha256=digest(regular(manifest).read_bytes()), version=version,
+                phase="menu", run_id=run_id, at=now()))
+
+    def mark(self, repo, install, manifest, phase):
+        require(phase in PHASES)
+        with self.lock():
+            data = self.flow(repo, install, manifest, allow_uncertain=True)
+            require(data is not None)
+            data.update(phase=phase, at=now())
+            self.write(self.flow_name(repo, install), data)
+
+    def reset(self, repo, install, manifest):
+        with self.lock():
+            data = self.flow(repo, install, manifest)
+            require(data is not None and data["phase"] not in UNCERTAIN)
+            data.update(phase="menu", run_id="YHSM-" + secrets.token_hex(8).upper(), at=now())
+            self.write(self.flow_name(repo, install), data)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("licence-check", "licence-accept", "telemetry-get", "telemetry-set", "telemetry-snapshot",
+                                           "flow-get", "installed", "mark", "reset", "lease"))
+    parser.add_argument("args", nargs="*")
+    options = parser.parse_args(argv)
+    state = Store()
+    try:
+        args = options.args
+        command = options.command
+        if command.startswith("licence-"):
+            require(len(args) == 1)
+            return 0 if state.licence(args[0], command == "licence-accept") else 1
+        if command == "telemetry-get":
+            require(not args)
+            print(state.telemetry())
+        elif command == "telemetry-snapshot":
+            require(not args)
+            decision, fingerprint, paths = state.telemetry_snapshot()
+            print("yhsm-telemetry-snapshot-v2")
+            print(decision)
+            if fingerprint:
+                print(fingerprint)
+                print("\n".join(str(path) for path in paths))
+        elif command == "telemetry-set":
+            require(len(args) == 1)
+            state.telemetry(args[0])
+        elif command == "flow-get":
+            require(len(args) == 3)
+            data = state.flow(*args)
+            if data:
+                print("|".join(data[key] for key in ("version", "phase", "run_id")))
+        elif command == "installed":
+            require(len(args) == 5)
+            state.installed(*args)
+        elif command == "mark":
+            require(len(args) == 4)
+            state.mark(*args)
+        elif command == "reset":
+            require(len(args) == 3)
+            state.reset(*args)
+        elif command == "lease":
+            require(not args)
+            state.open(True)
+            os.close(state._file("workflow.lock", os.O_RDWR | os.O_CREAT))
+            print(state.root / "workflow.lock")
+        return 0
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        print("HARD_FAIL_CUSTOMER_EXECUTION_NO_GO: local onboarding state rejected; no automatic retry", file=sys.stderr)
+        return 75
+    finally:
+        state.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY_YHSM_STAGE0_LICENCE
+}
+# END GENERATED LICENCE RECEIPT
+
 require_pilot_license_acceptance() {
   local digest answer=""
+  export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
   digest="$(pilot_license_digest)" || return 1
   show_pilot_notice
+  if [[ -n "$ACCEPT_PILOT_LICENSES" && "$ACCEPT_PILOT_LICENSES" != "$digest" ]]; then
+    log_error "Lizenzdigest stimmt nicht; keine Zustimmung fuer diese Texte."
+    return 1
+  fi
+  PILOT_ACCEPTANCE_NEW=0
+  if command -v python3 >/dev/null 2>&1; then
+    local consent_rc=0
+    yhsm_onboarding_state licence-check "$digest" || consent_rc=$?
+    if [[ "$consent_rc" == 0 ]]; then
+      log_ok "PilotLicenseAcceptance=reused digest=$digest scope=host-user"
+      return 0
+    fi
+    [[ "$consent_rc" == 1 ]] || return "$consent_rc"
+  fi
   if [[ -n "$ACCEPT_PILOT_LICENSES" ]]; then
     [[ "$ACCEPT_PILOT_LICENSES" == "$digest" ]] || {
       log_error "Lizenzdigest stimmt nicht; keine Zustimmung fuer diese Texte."
@@ -1749,7 +2122,12 @@ require_pilot_license_acceptance() {
       esac
     done
   fi
-  log_ok "PilotLicenseAcceptance=accepted digest=$digest scope=this-run"
+  PILOT_ACCEPTANCE_NEW=1
+  if command -v python3 >/dev/null 2>&1; then
+    yhsm_onboarding_state licence-accept "$digest" || return 75
+    PILOT_ACCEPTANCE_NEW=0
+  fi
+  log_ok "PilotLicenseAcceptance=accepted digest=$digest scope=host-user"
 }
 
 verify_customer_pilot_license() {
@@ -1789,7 +2167,7 @@ Options:
   --issue-smoke-test           After private authentication, create/comment/view/close
                                one sanitized temporary GitHub issue.
   --show-licenses              Print both exact pilot license texts and their combined SHA-256; stop.
-  --accept-pilot-licenses <sha256>  Explicit acceptance of those exact texts for this run.
+  --accept-pilot-licenses <sha256>  Explicit acceptance stored for this host/user and exact texts.
   --forget-auth                Forget this OS user's cached Stage-0 logins and stop.
   --stage0-candidate           Local manifest-bound candidate in adjacent ../../client;
                                requires --install-dir, consumes an existing RAM handoff.
@@ -2576,6 +2954,10 @@ if [[ "${#missing_packages[@]}" -gt 0 ]]; then
   "${SUDO[@]}" apt-get install -y --no-install-recommends "${missing_packages[@]}"
 else
   log_ok "Baseline client-access packages already present."
+fi
+
+if [[ "${PILOT_ACCEPTANCE_NEW:-0}" == 1 ]]; then
+  yhsm_onboarding_state licence-accept "$(pilot_license_digest)" || exit 75
 fi
 
 yhsm_ui_heading phase.target

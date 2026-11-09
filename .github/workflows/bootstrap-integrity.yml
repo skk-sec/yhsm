@@ -91,6 +91,8 @@ jobs:
           PY
       - name: Verify customer-independent public entry contract
         run: python3 tests/test_public_entry_contract.py
+      - name: Verify persistent licence receipts (offline)
+        run: python3 tests/test_stage0_license_receipt.py
       - name: Verify resolver contract
         shell: bash
         run: bash tests/test_stage0_resolver_contract.sh
