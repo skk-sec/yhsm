@@ -1606,7 +1606,7 @@ yhsm_feedback_ensure_run() {
 _yhsm_feedback_pending() {
   local action="$1"; shift
   python3 - "$action" "$YHSM_SUPPORT_STATE_FILE.pending" "$YHSM_SUPPORT_REPO" "$YHSM_SUPPORT_RUN_ID" "$YHSM_SUPPORT_RELEASE_VERSION" "$YHSM_SUPPORT_ISSUE_NUMBER" "$@" <<'PY_PENDING'
-import datetime, hashlib, json, os, re, stat, sys
+import datetime, fcntl, hashlib, json, os, re, stat, sys, time
 from pathlib import Path
 action, directory, repo, run, release, issue, *args = sys.argv[1:]
 root=Path(directory)
@@ -1636,6 +1636,21 @@ try:
         s=root.lstat()
         if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)&0o077:
             raise ValueError("directory")
+    # Pending retention happens before the remote transaction lock. Serialize
+    # its short local IO as well: another writer must not read partial JSON.
+    if root.exists():
+        lock_fd=os.open(root/".pending.lock",os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
+        metadata=os.fstat(lock_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid!=os.geteuid() or stat.S_IMODE(metadata.st_mode)&0o077 or metadata.st_nlink!=1 or metadata.st_size:
+            raise ValueError("pending-lock")
+        deadline=time.monotonic()+5
+        while True:
+            try:
+                fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic()>=deadline: raise ValueError("pending-lock-timeout")
+                time.sleep(0.01)
     if action=="write":
         step,status,error,detail,overall=args
         digest=hashlib.sha256("\0".join([run,step,status,error,detail,overall]).encode()).hexdigest()[:24]

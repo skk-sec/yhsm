@@ -1,6 +1,8 @@
 """Offline receipt regressions; never execute installation, login or customer steps."""
 from pathlib import Path
 import json
+import fcntl
+import sys
 import os
 import pty
 import re
@@ -252,6 +254,116 @@ log_error 'HARD_FAIL_TEST_BOUNDARY RAW_DETAIL_CANARY'
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn('SUPPORT_PENDING=BLOCKED',result.stdout+result.stderr)
             self.assertEqual(list(target.iterdir()),[])
+
+class PendingAtomicTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.scratch=tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.scratch.cleanup)
+        cls.helper=Path(cls.scratch.name)/'pending.sh'
+        candidate=(ROOT/'bootstrap.sh').read_text()
+        block=candidate.split('# Shared, private local pending records are available before clone/authentication.\n',1)[1].split('# Keep these texts byte-identical',1)[0]
+        cls.helper.write_text(block)
+
+    def test_unsafe_pending_lock_is_preserved_and_blocks_before_record_write(self):
+        for kind in ('content','public','symlink'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);pending=root/'support.json.pending';pending.mkdir(mode=0o700)
+                lock=pending/'.pending.lock';target=root/'target';target.write_bytes(b'canary')
+                if kind=='symlink':lock.symlink_to(target)
+                else:
+                    lock.write_bytes(b'canary' if kind=='content' else b'')
+                    lock.chmod(0o600 if kind=='content' else 0o644)
+                before=lock.lstat()
+                env={'PATH':os.defpath,'HOME':str(root),'YHSM_SUPPORT_STATE_FILE':str(root/'support.json'),
+                     'YHSM_SUPPORT_REPO':'example/customer','YHSM_SUPPORT_RUN_ID':'YHSM-AAAAAAAAAAAAAAAA'}
+                result=subprocess.run(['bash','-c','source "$1"; YHSM_SUPPORT_REPO=example/customer; YHSM_SUPPORT_RUN_ID=YHSM-AAAAAAAAAAAAAAAA; _yhsm_feedback_pending write Install PASS "" fixed ""',
+                    'fixture',str(self.helper)],env=env,text=True,capture_output=True,timeout=10)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn('SUPPORT_PENDING=BLOCKED',result.stderr)
+                self.assertEqual(lock.lstat().st_ino,before.st_ino)
+                self.assertEqual(target.read_bytes(),b'canary')
+                self.assertEqual(list(pending.glob('*.json')),[])
+
+    def test_pending_lock_wait_is_bounded_without_deleting_the_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);pending=root/'support.json.pending';pending.mkdir(mode=0o700)
+            lock=pending/'.pending.lock'
+            fd=os.open(lock,os.O_RDWR|os.O_CREAT,0o600)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX)
+                inode=lock.stat().st_ino
+                env={'PATH':os.defpath,'HOME':str(root),'YHSM_SUPPORT_STATE_FILE':str(root/'support.json'),
+                     'YHSM_SUPPORT_REPO':'example/customer','YHSM_SUPPORT_RUN_ID':'YHSM-AAAAAAAAAAAAAAAA'}
+                start=time.monotonic()
+                result=subprocess.run(['bash','-c','source "$1"; YHSM_SUPPORT_REPO=example/customer; YHSM_SUPPORT_RUN_ID=YHSM-AAAAAAAAAAAAAAAA; _yhsm_feedback_pending write Install PASS "" fixed ""',
+                    'fixture',str(self.helper)],env=env,text=True,capture_output=True,timeout=10)
+                self.assertLess(time.monotonic()-start,9)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn('SUPPORT_PENDING=BLOCKED',result.stderr)
+                self.assertEqual(lock.stat().st_ino,inode)
+                self.assertEqual(list(pending.glob('*.json')),[])
+            finally:os.close(fd)
+
+    def test_duplicate_writer_cannot_read_an_unfinished_pending_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); binpath=root/'bin'; binpath.mkdir()
+            wrapper=binpath/'python3'
+            # Pause a real writer after exclusive creation, before JSON write.
+            # No filesystem, flock, API or metadata operation is replaced.
+            wrapper.write_text('#!'+sys.executable+'\n'+r'''
+import os,subprocess,sys,time
+from pathlib import Path
+code=sys.stdin.read()
+Path(os.environ['ATTEMPT']).touch()
+needle='            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)'
+if os.environ.get('PENDING_HOLD')=='1':
+    assert code.count(needle)==1
+    code=code.replace(needle,needle+"\n            Path(os.environ['READY']).touch()\n            deadline=__import__('time').monotonic()+10\n            while not Path(os.environ['RELEASE']).exists():\n                if __import__('time').monotonic()>deadline: raise SystemExit(98)\n                __import__('time').sleep(0.01)")
+raise SystemExit(subprocess.run([sys.executable,*sys.argv[1:]],input=code,text=True).returncode)
+''')
+            wrapper.chmod(0o700)
+            env={'PATH':str(binpath)+':'+os.defpath,'HOME':str(root),
+                 'YHSM_AUTOMATIC_ISSUE_FEEDBACK':'1','YHSM_SUPPORT_REPO':'example/customer',
+                 'YHSM_SUPPORT_RUN_ID':'YHSM-AAAAAAAAAAAAAAAA',
+                 'YHSM_SUPPORT_STATE_FILE':str(root/'support.json'),
+                 'READY':str(root/'ready'),'RELEASE':str(root/'release')}
+            script='source "$1"; YHSM_SUPPORT_REPO=example/customer; YHSM_SUPPORT_RUN_ID=YHSM-AAAAAAAAAAAAAAAA; _yhsm_feedback_pending write Install PASS "" fixed-event ""'
+            children=[]
+            try:
+                first=subprocess.Popen(['bash','-c',script,'fixture',str(self.helper)],env=dict(env,
+                    ATTEMPT=str(root/'attempt1'),PENDING_HOLD='1'),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                children.append(first)
+                deadline=time.monotonic()+10
+                while not (root/'ready').exists():
+                    self.assertIsNone(first.poll(),'first writer exited before the barrier')
+                    self.assertLess(time.monotonic(),deadline)
+                    time.sleep(0.01)
+                second=subprocess.Popen(['bash','-c',script,'fixture',str(self.helper)],env=dict(env,
+                    ATTEMPT=str(root/'attempt2')),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                children.append(second)
+                while not (root/'attempt2').exists():
+                    self.assertIsNone(second.poll())
+                    self.assertLess(time.monotonic(),deadline)
+                    time.sleep(0.01)
+                time.sleep(0.3)
+                self.assertIsNone(second.poll(),'duplicate writer must wait for complete JSON')
+                (root/'release').touch()
+                for child in children:
+                    out,err=child.communicate(timeout=10)
+                    self.assertEqual(child.returncode,0,out+err)
+                records=list((root/'support.json.pending').glob('*.json'))
+                self.assertEqual(len(records),1)
+                data=json.loads(records[0].read_text())
+                self.assertEqual(data['detail'],'fixed-event')
+                self.assertEqual(data['repository'],'example/customer')
+                self.assertEqual(records[0].stat().st_mode&0o777,0o600)
+                self.assertRegex(data['writer_scope'],r'^[a-f0-9]{64}$')
+            finally:
+                (root/'release').touch()
+                for child in children:
+                    if child.poll() is None:child.kill()
+                    child.communicate(timeout=10)
 
 if __name__ == '__main__':
     unittest.main()

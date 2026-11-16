@@ -11,3 +11,10 @@ The existing README pin intentionally remains the released entry. Therefore
 the existing exact-pin integrity gate is expected to block this Draft until a
 separately approved publication binds the new immutable bytes. No workflow
 weakening, release, Main pin activation or customer action is included.
+
+## Local pending IO correction
+
+Serialize short pending-file IO with an owner/mode/link/size-validated private
+kernel lock and a five-second acquisition bound. A duplicate writer cannot read
+unfinished JSON. Unsafe/partial state is retained; no reset or upload is added.
+The separate released README pin and all licence/auth behavior remain unchanged.
