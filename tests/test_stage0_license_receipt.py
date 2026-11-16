@@ -177,5 +177,81 @@ unset -f command
             self.assertIn('Zustimmung für diesen Host/Benutzer',help_result.stdout)
 
 
+
+class Stage0PendingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        candidate=(ROOT/'bootstrap.sh').read_text()
+        cls.pending=candidate.split('# Shared, private local pending records are available before clone/authentication.\n',1)[1].split('# Keep these texts byte-identical',1)[0]
+        cls.receipt=candidate.split('# BEGIN GENERATED LICENCE RECEIPT\n',1)[1].split('# END GENERATED LICENCE RECEIPT',1)[0]
+        cls.helper=cls.receipt.split("<<'PY_YHSM_STAGE0_LICENCE'\n",1)[1].split('PY_YHSM_STAGE0_LICENCE\n',1)[0]
+
+    def run_case(self, root, decision=None, *, dry=False, before='', after=''):
+        env={'PATH':os.defpath,'HOME':str(root),'XDG_STATE_HOME':str(root/'state'),
+             'YHSM_AUTOMATIC_ISSUE_FEEDBACK':'1'}
+        if decision is not None:
+            seeded=subprocess.run(['python3','-I','-B','-','telemetry-set',decision],
+                input=self.helper,text=True,capture_output=True,env=env,timeout=10)
+            self.assertEqual(seeded.returncode,0,seeded.stderr)
+        script='''set -eu
+yhsm_log_error() { :; }; yhsm_log_warn() { printf '%s\\n' "$*"; }
+DRY_RUN='''+('1' if dry else '0')+'\n'+self.pending+self.receipt+'''
+YHSM_SUPPORT_REPO=example/customer
+'''+before+'''
+log_error 'HARD_FAIL_TEST_BOUNDARY RAW_DETAIL_CANARY'
+'''+after
+        return subprocess.run(['bash','-c',script],text=True,capture_output=True,env=env,timeout=10)
+
+    def test_accepted_error_is_private_redacted_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            result=self.run_case(root,'accepted',after="log_error 'HARD_FAIL_TEST_BOUNDARY OTHER_RAW_CANARY'\n")
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('FEEDBACK_PENDING=true',result.stdout)
+            pending=root/'state/yhsm/customer-support-run.json.pending'
+            records=list(pending.glob('*.json')); self.assertEqual(len(records),1)
+            data=json.loads(records[0].read_text())
+            self.assertEqual(data['repository'],'example/customer')
+            self.assertEqual(data['overall'],'NO_GO')
+            self.assertEqual(data['consumer_ref'],'unknown')
+            self.assertEqual(data['detail'],'stage0-problem; cause-unverified')
+            self.assertRegex(data['writer_scope'],r'^[a-f0-9]{64}$')
+            self.assertTrue(data['observed_at'])
+            self.assertNotIn('RAW',records[0].read_text())
+            self.assertEqual(records[0].stat().st_mode & 0o777,0o600)
+            self.assertEqual(pending.stat().st_mode & 0o777,0o700)
+
+    def test_denied_unknown_and_dry_run_never_write_pending(self):
+        for decision,dry in [('denied',False),(None,False),('accepted',True)]:
+            with self.subTest(decision=decision,dry=dry),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp)
+                result=self.run_case(root,decision,dry=dry)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertNotIn('FEEDBACK_PENDING=true',result.stdout)
+                self.assertFalse(list(root.rglob('*.pending')))
+                if decision is None:self.assertFalse((root/'state').exists())
+
+    def test_legacy_pending_is_not_adopted_or_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);pending=root/'state/yhsm/customer-support-run.json.pending'
+            pending.mkdir(parents=True,mode=0o700)
+            record=pending/('YHSM-'+'A'*16+'-legacy.json')
+            raw=json.dumps(dict(repository='example/customer',run_id='YHSM-'+'A'*16))
+            record.write_text(raw);record.chmod(0o600)
+            result=self.run_case(root,None,before='_yhsm_feedback_pending resume\n')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,'')
+            self.assertEqual(record.read_text(),raw)
+
+    def test_symlink_pending_root_is_blocked_without_target_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);target=root/'target';target.mkdir()
+            parent=root/'state/yhsm';parent.mkdir(parents=True)
+            (parent/'customer-support-run.json.pending').symlink_to(target,target_is_directory=True)
+            result=self.run_case(root,'accepted')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('SUPPORT_PENDING=BLOCKED',result.stdout+result.stderr)
+            self.assertEqual(list(target.iterdir()),[])
+
 if __name__ == '__main__':
     unittest.main()
