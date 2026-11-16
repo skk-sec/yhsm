@@ -1,6 +1,8 @@
 """Offline receipt regressions; never execute installation, login or customer steps."""
 from pathlib import Path
 import json
+import fcntl
+import sys
 import os
 import pty
 import re
@@ -176,6 +178,192 @@ unset -f command
             self.assertNotIn('Zustimmung zu diesen Texten für diesen Lauf.',help_result.stdout)
             self.assertIn('Zustimmung für diesen Host/Benutzer',help_result.stdout)
 
+
+
+class Stage0PendingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        candidate=(ROOT/'bootstrap.sh').read_text()
+        cls.pending=candidate.split('# Shared, private local pending records are available before clone/authentication.\n',1)[1].split('# Keep these texts byte-identical',1)[0]
+        cls.receipt=candidate.split('# BEGIN GENERATED LICENCE RECEIPT\n',1)[1].split('# END GENERATED LICENCE RECEIPT',1)[0]
+        cls.helper=cls.receipt.split("<<'PY_YHSM_STAGE0_LICENCE'\n",1)[1].split('PY_YHSM_STAGE0_LICENCE\n',1)[0]
+
+    def run_case(self, root, decision=None, *, dry=False, before='', after=''):
+        env={'PATH':os.defpath,'HOME':str(root),'XDG_STATE_HOME':str(root/'state'),
+             'YHSM_AUTOMATIC_ISSUE_FEEDBACK':'1'}
+        if decision is not None:
+            seeded=subprocess.run(['python3','-I','-B','-','telemetry-set',decision],
+                input=self.helper,text=True,capture_output=True,env=env,timeout=10)
+            self.assertEqual(seeded.returncode,0,seeded.stderr)
+        script='''set -eu
+yhsm_log_error() { :; }; yhsm_log_warn() { printf '%s\\n' "$*"; }
+DRY_RUN='''+('1' if dry else '0')+'\n'+self.pending+self.receipt+'''
+YHSM_SUPPORT_REPO=example/customer
+'''+before+'''
+log_error 'HARD_FAIL_TEST_BOUNDARY RAW_DETAIL_CANARY'
+'''+after
+        return subprocess.run(['bash','-c',script],text=True,capture_output=True,env=env,timeout=10)
+
+    def test_accepted_error_is_private_redacted_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            result=self.run_case(root,'accepted',after="log_error 'HARD_FAIL_TEST_BOUNDARY OTHER_RAW_CANARY'\n")
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('FEEDBACK_PENDING=true',result.stdout)
+            pending=root/'state/yhsm/customer-support-run.json.pending'
+            records=list(pending.glob('*.json')); self.assertEqual(len(records),1)
+            data=json.loads(records[0].read_text())
+            self.assertEqual(data['repository'],'example/customer')
+            self.assertEqual(data['overall'],'NO_GO')
+            self.assertEqual(data['consumer_ref'],'unknown')
+            self.assertEqual(data['detail'],'stage0-problem; cause-unverified')
+            self.assertRegex(data['writer_scope'],r'^[a-f0-9]{64}$')
+            self.assertTrue(data['observed_at'])
+            self.assertNotIn('RAW',records[0].read_text())
+            self.assertEqual(records[0].stat().st_mode & 0o777,0o600)
+            self.assertEqual(pending.stat().st_mode & 0o777,0o700)
+
+    def test_denied_unknown_and_dry_run_never_write_pending(self):
+        for decision,dry in [('denied',False),(None,False),('accepted',True)]:
+            with self.subTest(decision=decision,dry=dry),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp)
+                result=self.run_case(root,decision,dry=dry)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertNotIn('FEEDBACK_PENDING=true',result.stdout)
+                self.assertFalse(list(root.rglob('*.pending')))
+                if decision is None:self.assertFalse((root/'state').exists())
+
+    def test_legacy_pending_is_not_adopted_or_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);pending=root/'state/yhsm/customer-support-run.json.pending'
+            pending.mkdir(parents=True,mode=0o700)
+            record=pending/('YHSM-'+'A'*16+'-legacy.json')
+            raw=json.dumps(dict(repository='example/customer',run_id='YHSM-'+'A'*16))
+            record.write_text(raw);record.chmod(0o600)
+            result=self.run_case(root,None,before='_yhsm_feedback_pending resume\n')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,'')
+            self.assertEqual(record.read_text(),raw)
+
+    def test_symlink_pending_root_is_blocked_without_target_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);target=root/'target';target.mkdir()
+            parent=root/'state/yhsm';parent.mkdir(parents=True)
+            (parent/'customer-support-run.json.pending').symlink_to(target,target_is_directory=True)
+            result=self.run_case(root,'accepted')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('SUPPORT_PENDING=BLOCKED',result.stdout+result.stderr)
+            self.assertEqual(list(target.iterdir()),[])
+
+class PendingAtomicTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.scratch=tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.scratch.cleanup)
+        cls.helper=Path(cls.scratch.name)/'pending.sh'
+        candidate=(ROOT/'bootstrap.sh').read_text()
+        block=candidate.split('# Shared, private local pending records are available before clone/authentication.\n',1)[1].split('# Keep these texts byte-identical',1)[0]
+        cls.helper.write_text(block)
+
+    def test_unsafe_pending_lock_is_preserved_and_blocks_before_record_write(self):
+        for kind in ('content','public','symlink'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);pending=root/'support.json.pending';pending.mkdir(mode=0o700)
+                lock=pending/'.pending.lock';target=root/'target';target.write_bytes(b'canary')
+                if kind=='symlink':lock.symlink_to(target)
+                else:
+                    lock.write_bytes(b'canary' if kind=='content' else b'')
+                    lock.chmod(0o600 if kind=='content' else 0o644)
+                before=lock.lstat()
+                env={'PATH':os.defpath,'HOME':str(root),'YHSM_SUPPORT_STATE_FILE':str(root/'support.json'),
+                     'YHSM_SUPPORT_REPO':'example/customer','YHSM_SUPPORT_RUN_ID':'YHSM-AAAAAAAAAAAAAAAA'}
+                result=subprocess.run(['bash','-c','source "$1"; YHSM_SUPPORT_REPO=example/customer; YHSM_SUPPORT_RUN_ID=YHSM-AAAAAAAAAAAAAAAA; _yhsm_feedback_pending write Install PASS "" fixed ""',
+                    'fixture',str(self.helper)],env=env,text=True,capture_output=True,timeout=10)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn('SUPPORT_PENDING=BLOCKED',result.stderr)
+                self.assertEqual(lock.lstat().st_ino,before.st_ino)
+                self.assertEqual(target.read_bytes(),b'canary')
+                self.assertEqual(list(pending.glob('*.json')),[])
+
+    def test_pending_lock_wait_is_bounded_without_deleting_the_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);pending=root/'support.json.pending';pending.mkdir(mode=0o700)
+            lock=pending/'.pending.lock'
+            fd=os.open(lock,os.O_RDWR|os.O_CREAT,0o600)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX)
+                inode=lock.stat().st_ino
+                env={'PATH':os.defpath,'HOME':str(root),'YHSM_SUPPORT_STATE_FILE':str(root/'support.json'),
+                     'YHSM_SUPPORT_REPO':'example/customer','YHSM_SUPPORT_RUN_ID':'YHSM-AAAAAAAAAAAAAAAA'}
+                start=time.monotonic()
+                result=subprocess.run(['bash','-c','source "$1"; YHSM_SUPPORT_REPO=example/customer; YHSM_SUPPORT_RUN_ID=YHSM-AAAAAAAAAAAAAAAA; _yhsm_feedback_pending write Install PASS "" fixed ""',
+                    'fixture',str(self.helper)],env=env,text=True,capture_output=True,timeout=10)
+                self.assertLess(time.monotonic()-start,9)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn('SUPPORT_PENDING=BLOCKED',result.stderr)
+                self.assertEqual(lock.stat().st_ino,inode)
+                self.assertEqual(list(pending.glob('*.json')),[])
+            finally:os.close(fd)
+
+    def test_duplicate_writer_cannot_read_an_unfinished_pending_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); binpath=root/'bin'; binpath.mkdir()
+            wrapper=binpath/'python3'
+            # Pause a real writer after exclusive creation, before JSON write.
+            # No filesystem, flock, API or metadata operation is replaced.
+            wrapper.write_text('#!'+sys.executable+'\n'+r'''
+import os,subprocess,sys,time
+from pathlib import Path
+code=sys.stdin.read()
+Path(os.environ['ATTEMPT']).touch()
+needle='            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)'
+if os.environ.get('PENDING_HOLD')=='1':
+    assert code.count(needle)==1
+    code=code.replace(needle,needle+"\n            Path(os.environ['READY']).touch()\n            deadline=__import__('time').monotonic()+10\n            while not Path(os.environ['RELEASE']).exists():\n                if __import__('time').monotonic()>deadline: raise SystemExit(98)\n                __import__('time').sleep(0.01)")
+raise SystemExit(subprocess.run([sys.executable,*sys.argv[1:]],input=code,text=True).returncode)
+''')
+            wrapper.chmod(0o700)
+            env={'PATH':str(binpath)+':'+os.defpath,'HOME':str(root),
+                 'YHSM_AUTOMATIC_ISSUE_FEEDBACK':'1','YHSM_SUPPORT_REPO':'example/customer',
+                 'YHSM_SUPPORT_RUN_ID':'YHSM-AAAAAAAAAAAAAAAA',
+                 'YHSM_SUPPORT_STATE_FILE':str(root/'support.json'),
+                 'READY':str(root/'ready'),'RELEASE':str(root/'release')}
+            script='source "$1"; YHSM_SUPPORT_REPO=example/customer; YHSM_SUPPORT_RUN_ID=YHSM-AAAAAAAAAAAAAAAA; _yhsm_feedback_pending write Install PASS "" fixed-event ""'
+            children=[]
+            try:
+                first=subprocess.Popen(['bash','-c',script,'fixture',str(self.helper)],env=dict(env,
+                    ATTEMPT=str(root/'attempt1'),PENDING_HOLD='1'),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                children.append(first)
+                deadline=time.monotonic()+10
+                while not (root/'ready').exists():
+                    self.assertIsNone(first.poll(),'first writer exited before the barrier')
+                    self.assertLess(time.monotonic(),deadline)
+                    time.sleep(0.01)
+                second=subprocess.Popen(['bash','-c',script,'fixture',str(self.helper)],env=dict(env,
+                    ATTEMPT=str(root/'attempt2')),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                children.append(second)
+                while not (root/'attempt2').exists():
+                    self.assertIsNone(second.poll())
+                    self.assertLess(time.monotonic(),deadline)
+                    time.sleep(0.01)
+                time.sleep(0.3)
+                self.assertIsNone(second.poll(),'duplicate writer must wait for complete JSON')
+                (root/'release').touch()
+                for child in children:
+                    out,err=child.communicate(timeout=10)
+                    self.assertEqual(child.returncode,0,out+err)
+                records=list((root/'support.json.pending').glob('*.json'))
+                self.assertEqual(len(records),1)
+                data=json.loads(records[0].read_text())
+                self.assertEqual(data['detail'],'fixed-event')
+                self.assertEqual(data['repository'],'example/customer')
+                self.assertEqual(records[0].stat().st_mode&0o777,0o600)
+                self.assertRegex(data['writer_scope'],r'^[a-f0-9]{64}$')
+            finally:
+                (root/'release').touch()
+                for child in children:
+                    if child.poll() is None:child.kill()
+                    child.communicate(timeout=10)
 
 if __name__ == '__main__':
     unittest.main()

@@ -1588,7 +1588,136 @@ print_argv_banner() {
 log_info() { yhsm_log_info "$@"; }
 log_warn() { yhsm_log_warn "$@"; }
 log_ok() { yhsm_log_success "$@"; }
-log_error() { yhsm_log_error "$@"; }
+# Shared, private local pending records are available before clone/authentication.
+YHSM_SUPPORT_REPO=""
+YHSM_SUPPORT_RUN_ID=""
+YHSM_SUPPORT_ISSUE_NUMBER=""
+YHSM_SUPPORT_RELEASE_VERSION=unknown
+YHSM_SUPPORT_STATE_FILE="${YHSM_SUPPORT_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/yhsm/customer-support-run.json}"
+YHSM_STAGE0_FEEDBACK_ERROR=HARD_FAIL_CUSTOMER_EXECUTION_NO_GO
+export YHSM_SUPPORT_STATE_FILE
+yhsm_feedback_normal_run() { export YHSM_AUTOMATIC_ISSUE_FEEDBACK="${YHSM_AUTOMATIC_ISSUE_FEEDBACK:-0}"; }
+yhsm_feedback_ensure_run() {
+  if [[ ! "$YHSM_SUPPORT_RUN_ID" =~ ^YHSM-[A-F0-9]{16}$ ]]; then
+    YHSM_SUPPORT_RUN_ID="$(python3 -c 'import secrets; print("YHSM-"+secrets.token_hex(8).upper())')" || return 1
+    export YHSM_SUPPORT_RUN_ID
+  fi
+}
+_yhsm_feedback_pending() {
+  local action="$1"; shift
+  python3 - "$action" "$YHSM_SUPPORT_STATE_FILE.pending" "$YHSM_SUPPORT_REPO" "$YHSM_SUPPORT_RUN_ID" "$YHSM_SUPPORT_RELEASE_VERSION" "$YHSM_SUPPORT_ISSUE_NUMBER" "$@" <<'PY_PENDING'
+import datetime, fcntl, hashlib, json, os, re, stat, sys, time
+from pathlib import Path
+action, directory, repo, run, release, issue, *args = sys.argv[1:]
+root=Path(directory)
+machine=Path("/etc/machine-id").read_text(encoding="ascii").strip()
+if not re.fullmatch("[a-f0-9]{32}",machine) or int(machine,16)==0: raise SystemExit(1)
+writer_scope=hashlib.sha256(("yhsm-feedback-writer-v1\0"+machine+":"+str(os.geteuid())).encode()).hexdigest()
+def read(path):
+    s=path.lstat()
+    if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or stat.S_IMODE(s.st_mode)&0o077 or s.st_nlink!=1:
+        raise ValueError("metadata")
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    with os.fdopen(fd,encoding="utf-8") as stream:
+        if os.fstat(stream.fileno()).st_size>8192: raise ValueError("size")
+        data=json.load(stream)
+        if data.get("writer_scope",writer_scope)!=writer_scope: raise ValueError("writer")
+        return data
+try:
+    for parent in [root,*root.parents]:
+        if parent.is_symlink(): raise ValueError("symlink")
+        if parent.exists():
+            metadata=parent.lstat()
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid not in (0,os.geteuid()) or (metadata.st_mode&0o022 and not metadata.st_mode&stat.S_ISVTX): raise ValueError("parent")
+    if action=="write":
+        if not re.fullmatch(r"YHSM-[A-F0-9]{16}",run): raise ValueError("run")
+        root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if root.exists():
+        s=root.lstat()
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)&0o077:
+            raise ValueError("directory")
+    # Pending retention happens before the remote transaction lock. Serialize
+    # its short local IO as well: another writer must not read partial JSON.
+    if root.exists():
+        lock_fd=os.open(root/".pending.lock",os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
+        metadata=os.fstat(lock_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid!=os.geteuid() or stat.S_IMODE(metadata.st_mode)&0o077 or metadata.st_nlink!=1 or metadata.st_size:
+            raise ValueError("pending-lock")
+        deadline=time.monotonic()+5
+        while True:
+            try:
+                fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic()>=deadline: raise ValueError("pending-lock-timeout")
+                time.sleep(0.01)
+    if action=="write":
+        step,status,error,detail,overall=args
+        digest=hashlib.sha256("\0".join([run,step,status,error,detail,overall]).encode()).hexdigest()[:24]
+        path=root/(run+"-"+digest+".json")
+        consumer_ref=os.environ.get("YHSM_SUPPORT_CONSUMER_REF","")
+        consumer_ref=consumer_ref if re.fullmatch(r"[a-f0-9]{40}",consumer_ref) else "unknown"
+        data=dict(writer_scope=writer_scope,repository=repo,run_id=run,release=release,consumer_ref=consumer_ref,issue=issue,step=step,status=status,
+                  error=error,detail=detail,overall=overall,observed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+        if not path.exists():
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,"w",encoding="utf-8") as stream: json.dump(data,stream)
+        else:
+            old=read(path)
+            if any(old.get(k)!=v for k,v in data.items() if k!="observed_at"): raise ValueError("collision")
+        print(path)
+    elif action=="resume":
+        if root.exists():
+            for path in sorted(root.glob("YHSM-*.json")):
+                data=read(path)
+                if data.get("writer_scope")==writer_scope and data.get("repository")==repo and re.fullmatch(r"YHSM-[A-F0-9]{16}",str(data.get("run_id",""))):
+                    print(data["run_id"]); print(data.get("issue","")); break
+    elif action=="list":
+        if root.exists():
+            for path in sorted(root.glob(run+"-*.json")):
+                data=read(path)
+                if data.get("repository")==repo or (not data.get("repository") and data.get("run_id")==run):
+                    print(path)
+    elif action=="read":
+        path=Path(args[0])
+        if path.parent!=root: raise ValueError("scope")
+        data=read(path)
+        for key in ["step","status","error","detail","overall","release"]:
+            value=str(data.get(key,""))
+            if "\n" in value or "\r" in value: raise ValueError("value")
+            print(value)
+        consumer_ref=str(data.get("consumer_ref","unknown"))
+        print(consumer_ref if re.fullmatch(r"[a-f0-9]{40}",consumer_ref) else "unknown")
+    elif action=="ack":
+        path=Path(args[0])
+        if path.parent!=root: raise ValueError("scope")
+        read(path); path.unlink()
+except (OSError,ValueError,TypeError,KeyError):
+    print("SUPPORT_PENDING=BLOCKED",file=sys.stderr); raise SystemExit(1)
+PY_PENDING
+}
+
+stage0_feedback_allowed() {
+  local decision
+  command -v python3 >/dev/null 2>&1 || return 1
+  decision="$(yhsm_onboarding_state telemetry-get 2>/dev/null)" || return 1
+  [[ "$decision" == accepted ]]
+}
+
+log_error() {
+  yhsm_log_error "$@"
+  if [[ "$DRY_RUN" -eq 0 ]] && stage0_feedback_allowed; then
+    if [[ "$1" =~ ^(HARD_FAIL_[A-Z0-9_]+) ]]; then YHSM_STAGE0_FEEDBACK_ERROR="${BASH_REMATCH[1]}"; fi
+    if yhsm_feedback_ensure_run; then
+      if ! _yhsm_feedback_pending write "GitHub/Auth" BLOCKED "$YHSM_STAGE0_FEEDBACK_ERROR" "stage0-problem; cause-unverified" NO_GO >/dev/null; then
+        yhsm_log_warn "SUPPORT_PENDING=BLOCKED"
+      fi
+    else
+      yhsm_log_warn "SUPPORT_PENDING=BLOCKED"
+    fi
+    yhsm_log_warn "FEEDBACK_PENDING=true; redacted problem retained until the exact private customer channel is authenticated."
+  fi
+}
 
 # Keep these texts byte-identical to the two authoritative LICENSE sources.
 # Embedded copies keep the one-file bootstrap readable before network/authentication.
@@ -1725,7 +1854,7 @@ show_pilot_notice() {
 
 # BEGIN GENERATED LICENCE RECEIPT
 yhsm_onboarding_state() {
-  case "${1:-}" in licence-check|licence-accept) ;; *) return 75 ;; esac
+  case "${1:-}" in licence-check|licence-accept|telemetry-get) ;; *) return 75 ;; esac
   python3 -I -B - "$@" <<'PY_YHSM_STAGE0_LICENCE'
 """Private, host/user-bound consent and progress; never stores credentials (#3204)."""
 import argparse
@@ -2961,7 +3090,9 @@ if [[ "${PILOT_ACCEPTANCE_NEW:-0}" == 1 ]]; then
 fi
 
 yhsm_ui_heading phase.target
+yhsm_feedback_normal_run
 resolve_target_repository || exit 2
+YHSM_SUPPORT_REPO="$TARGET_REPO"; export YHSM_SUPPORT_REPO
 valid_target_repo "$TARGET_REPO" || { log_error "Invalid --target-repo."; exit 2; }
 if sensitive_argv_value "$TARGET_REPO" || sensitive_argv_value "${TARGET_REPO%%/*}" || sensitive_argv_value "${TARGET_REPO##*/}"; then
   log_error "--target-repo contains a sensitive-shaped value and is rejected."
@@ -4847,6 +4978,7 @@ printf '%s\n' '--- STAGE-0 READBACK ---'
 printf 'repository=%s\n' "$TARGET_REPO"
 printf 'branch=%s\n' "$repo_branch"
 printf 'head=%s\n' "$repo_head"
+YHSM_SUPPORT_CONSUMER_REF="$repo_head"; export YHSM_SUPPORT_CONSUMER_REF
 printf 'remote=%s\n' "$repo_remote"
 printf 'path=%s\n' "$dest_path"
 
